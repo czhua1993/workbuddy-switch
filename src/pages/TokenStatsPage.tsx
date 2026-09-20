@@ -1544,28 +1544,49 @@ function TokenStatsLoadingSkeleton() {
   );
 }
 
+/**
+ * 跨挂载保留的上一次统计结果。
+ *
+ * 扫一次本地会话日志要数秒，切走再回来不该重新看骨架屏：这里把上次结果留在模块作用域，
+ * 组件重新挂载时先渲染它，再在后台静默刷新（后端另有 60s 复用窗口兜底）。
+ * 只放内存：跨进程/重启不保留，也不占用 localStorage 配额（明细行可能有几千条）。
+ */
+let lastTokenStats: TokenStatistics | null = null;
+
 export default function TokenStatsPage() {
-  const [stats, setStats] = useState<TokenStatistics | null>(null);
+  const [stats, setStats] = useState<TokenStatistics | null>(lastTokenStats);
   const [active, setActive] = useState<SourceKey>(readPreferredTokenSource);
-  const [loading, setLoading] = useState(true);
+  // 只有「完全没有旧数据」才显示骨架屏；有旧数据时是后台静默刷新。
+  const [loading, setLoading] = useState(lastTokenStats === null);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [detailOpen, setDetailOpen] = useState(false);
+  // 点「刷新统计」置位：下一次 effect 强制重扫，绕过后端复用窗口。
+  const forceRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
-    setLoading(true);
+    const force = forceRef.current;
+    forceRef.current = false;
+    const hasCache = lastTokenStats !== null;
+    setLoading(!hasCache);
+    setRefreshing(true);
     setError(null);
     api
-      .getTokenStatistics()
+      .getTokenStatistics(undefined, force)
       .then((result) => {
-        if (!disposed) setStats(result);
+        if (disposed) return;
+        lastTokenStats = result;
+        setStats(result);
       })
       .catch((cause) => {
         if (!disposed) setError(api.asError(cause));
       })
       .finally(() => {
-        if (!disposed) setLoading(false);
+        if (disposed) return;
+        setLoading(false);
+        setRefreshing(false);
       });
     return () => {
       disposed = true;
@@ -1599,8 +1620,14 @@ export default function TokenStatsPage() {
           ) : (
             <>
               <h1 className="text-[28px] font-semibold tracking-tight">Token 统计</h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                当前数据更新于 {stats ? formatDateTime(stats.generatedAt) : "—"}
+              <p className="mt-2 flex max-w-2xl flex-wrap items-center gap-1.5 text-sm leading-6 text-muted-foreground">
+                <span>当前数据更新于 {stats ? formatDateTime(stats.generatedAt) : "—"}</span>
+                {refreshing ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 className="size-3.5 animate-spin" />
+                    正在刷新…
+                  </span>
+                ) : null}
               </p>
             </>
           )}
@@ -1622,10 +1649,14 @@ export default function TokenStatsPage() {
               className="shrink-0"
               variant="outline"
               size="sm"
-              onClick={() => setReload((value) => value + 1)}
+              onClick={() => {
+                // 强制重扫：绕过后端 60s 复用窗口，同时触发一次加载。
+                forceRef.current = true;
+                setReload((value) => value + 1);
+              }}
               disabled={loading}
             >
-              {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {loading || refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               刷新统计
             </Button>
           </DemoAction>

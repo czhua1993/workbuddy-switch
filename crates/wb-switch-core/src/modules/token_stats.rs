@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::modules::variant::WbVariant;
 
@@ -962,18 +963,84 @@ fn ide_source(
     collector.into_value(name, paths.len())
 }
 
-/// Return independent WorkBuddy (CN), WorkBuddy AI, CodeBuddy CLI, and
-/// CodeBuddy IDE aggregates.
-/// `days` is interpreted in Rust using the same millisecond clock for every source.
-pub fn get_statistics(days: Option<i64>) -> Value {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let generated_at = crate::modules::config::now_ms();
-    let range_days = match days {
+/// 扫描结果的复用窗口。
+///
+/// 一次全量扫描要遍历两个 WorkBuddy 数据根、`~/.codebuddy/projects` 与整个
+/// `CodeBuddyExtension/Data` 会话树（实测 3s 量级）。统计页每次挂载都重新扫一遍
+/// 会让用户反复看到「正在扫描本地会话日志」，所以按窗口复用上一次结果；
+/// 用户点「刷新统计」传 `force = true` 绕过。
+const STATS_CACHE_TTL_MS: i64 = 60_000;
+
+/// 一次扫描结果与它对应的时间范围。
+struct StatsCache {
+    at: i64,
+    /// 归一化后的时间范围（`days` 只保留 7/30/90，其余视作全量）。
+    range: Option<i64>,
+    payload: Value,
+}
+
+impl StatsCache {
+    /// 缓存能否满足请求：范围一致且仍在窗口内。
+    ///
+    /// 用区间判定，时钟回拨（`now < at`）得到负值，同样视为不在窗口内。
+    fn covers(&self, range: Option<i64>, now: i64) -> bool {
+        self.range == range && (0..STATS_CACHE_TTL_MS).contains(&now.saturating_sub(self.at))
+    }
+}
+
+static STATS_CACHE: Mutex<Option<StatsCache>> = Mutex::new(None);
+
+/// 扫描并缓存 Token 统计。
+///
+/// `force = true` 时强制重扫（统计页「刷新统计」）；否则命中窗口内缓存直接返回。
+/// 缓存键是归一化后的时间范围，避免 7 天与全量互相串味。
+pub fn statistics_with(days: Option<i64>, force: bool) -> Value {
+    let range = normalized_range_days(days);
+    let now = crate::modules::config::now_ms();
+    // 整段持锁：命中直接返回，未命中则在锁内扫完再写回。并发请求因此串行，
+    // 不会把同一棵会话树重复扫 N 遍（调用方都在 spawn_blocking 线程上，不阻塞运行时）。
+    // 扫描若 panic 会毒化锁，这里取回内部数据继续用：统计页不能因为一次异常永久不可用。
+    let mut cache = STATS_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !force {
+        if let Some(cached) = cache.as_ref() {
+            if cached.covers(range, now) {
+                return cached.payload.clone();
+            }
+        }
+    }
+    let payload = scan_statistics(days);
+    *cache = Some(StatsCache {
+        at: now,
+        range,
+        payload: payload.clone(),
+    });
+    payload
+}
+
+/// `days` 只支持 7 / 30 / 90，其余（含 `None`）按全量处理。
+fn normalized_range_days(days: Option<i64>) -> Option<i64> {
+    match days {
         Some(7) => Some(7),
         Some(30) => Some(30),
         Some(90) => Some(90),
         _ => None,
-    };
+    }
+}
+
+/// Return independent WorkBuddy (CN), WorkBuddy AI, CodeBuddy CLI, and
+/// CodeBuddy IDE aggregates.
+/// `days` is interpreted in Rust using the same millisecond clock for every source.
+pub fn get_statistics(days: Option<i64>) -> Value {
+    statistics_with(days, false)
+}
+
+/// 真正执行扫描（无缓存）。
+fn scan_statistics(days: Option<i64>) -> Value {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let generated_at = crate::modules::config::now_ms();
+    let range_days = normalized_range_days(days);
     let cutoff = range_days.map(|value| generated_at - value * 86_400_000);
     let ide_projects = ide_project_by_session();
     json!({
@@ -1919,6 +1986,41 @@ mod tests {
         );
         // 国际版与国内版是两个独立 source，不合并。
         assert_ne!(sources[0]["source"], sources[1]["source"]);
+    }
+
+    /// 扫描缓存的命中判定：范围一致 + 窗口内才复用；过期 / 换范围 / 时钟回拨都不复用。
+    #[test]
+    fn stats_cache_covers_only_same_range_within_window() {
+        let now = 1_000_000;
+        let cache = StatsCache {
+            at: now,
+            range: None,
+            payload: json!({}),
+        };
+        assert!(cache.covers(None, now), "窗口起点即命中");
+        assert!(
+            cache.covers(None, now + STATS_CACHE_TTL_MS - 1),
+            "窗口内命中"
+        );
+        assert!(
+            !cache.covers(None, now + STATS_CACHE_TTL_MS),
+            "恰好过期不命中"
+        );
+        assert!(!cache.covers(Some(7), now), "换时间范围不命中");
+        assert!(
+            !cache.covers(None, now - STATS_CACHE_TTL_MS),
+            "时钟回拨不得永久命中"
+        );
+    }
+
+    /// `days` 只保留 7 / 30 / 90，其余按全量（None）归一。
+    #[test]
+    fn range_days_are_normalized() {
+        assert_eq!(normalized_range_days(Some(7)), Some(7));
+        assert_eq!(normalized_range_days(Some(30)), Some(30));
+        assert_eq!(normalized_range_days(Some(90)), Some(90));
+        assert_eq!(normalized_range_days(Some(15)), None);
+        assert_eq!(normalized_range_days(None), None);
     }
 
     /// 国际版数据根缺少 jsonl 根时返回空集，不报错。

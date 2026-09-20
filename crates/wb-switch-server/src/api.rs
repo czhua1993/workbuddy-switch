@@ -658,12 +658,15 @@ async fn api_credit_statistics(RawQuery(query): RawQuery) -> Response {
 }
 
 async fn api_token_statistics(RawQuery(query): RawQuery) -> Response {
-    let days = query.as_deref().and_then(|value| {
+    let raw = query.as_deref();
+    let days = raw.and_then(|value| {
         value
             .split('&')
             .find_map(|part| part.strip_prefix("days=")?.parse::<i64>().ok())
     });
-    match tokio::task::spawn_blocking(move || token_stats::get_statistics(days)).await {
+    // refresh=1：统计页「刷新统计」绕过 60s 复用窗口强制重扫。
+    let refresh = query_flag_enabled(raw, "refresh");
+    match tokio::task::spawn_blocking(move || token_stats::statistics_with(days, refresh)).await {
         Ok(statistics) => json_ok(statistics),
         Err(error) => json_err(
             format!("扫描 Token 统计失败: {error}"),

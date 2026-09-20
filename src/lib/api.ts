@@ -548,7 +548,19 @@ export function getCreditStatistics(refresh = false): Promise<CreditStatistics> 
   return call("get_credit_statistics", refresh ? { refresh: true } : undefined);
 }
 
-export function getTokenStatistics(days?: number): Promise<TokenStatistics> { return call("get_token_statistics", days ? { days } : undefined); }
+/**
+ * Token 统计（本地会话日志聚合，扫描一次约数秒）。
+ *
+ * `refresh = true` 绕过后端 60s 复用窗口强制重扫（「刷新统计」按钮）；
+ * 缺省命中窗口内结果直接返回，用于进页面时的后台刷新。
+ */
+export function getTokenStatistics(days?: number, refresh = false): Promise<TokenStatistics> {
+  // 只放有值的键：undefined 经 invoke/URL 序列化后语义不一致（null vs 缺失），后端 Option 一律按缺省处理。
+  const args: Record<string, unknown> = {};
+  if (days) args.days = days;
+  if (refresh) args.refresh = true;
+  return call("get_token_statistics", args);
+}
 
 /**
  * 模型限额台账：一次返回**全部账号**当前受限的模型与官方恢复时刻。
