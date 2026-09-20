@@ -1114,13 +1114,17 @@ pub fn sync_windows_env_for_account(
     let Some(updated_token) = account_value.get("access_token").and_then(Value::as_str) else {
         return Ok(false);
     };
-    // settings 必须仍是刷新前 token（或已同步的新 token）；否则视为用户已切换/手工修改。
+    // settings 当前 token 必须仍是刷新前 token（或已同步的新 token）；
+    // 否则视为用户已切换/手工修改，不写入。例外：若 settings 当前 token 已无法
+    // 匹配任何账号（孤儿/脱节），且本账号正是活跃账号，则直接写回最新 token 自愈，
+    // 避免每次刷新都因 previous/new 都不命中而永久静默跳过，导致「脱节」反复出现。
     let current = clean_bearer_token(current_token);
+    let current_orphaned = account_index_by_token(&accounts, current_token).is_none();
     let previous_matches = previous_access_token
         .map(clean_bearer_token)
         .is_some_and(|token| token == current);
     let already_synced = clean_bearer_token(updated_token) == current;
-    if !previous_matches && !already_synced {
+    if !previous_matches && !already_synced && !current_orphaned {
         return Ok(false);
     }
     if already_synced {
