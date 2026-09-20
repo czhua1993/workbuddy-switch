@@ -1,5 +1,5 @@
-import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { ArrowRight, CalendarCheck2, CalendarDays, Check, CircleAlert, CircleCheck, Clock3, Coins, Ellipsis, Gauge, Loader2, PackageOpen, PlaneTakeoff, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,9 @@ import { CodeBuddyCnIdeMark, CodeBuddyMark, VscodeExtMark, WorkBuddyMark } from 
 import { cn } from "@/lib/utils";
 import { creditResourceName } from "@/lib/credit-package-names";
 import { demoModeEnabled } from "@/lib/demo-mode";
-import type { AccountMeta, CreditExpiry, CreditResource, RateLimitEntry, TravelStatus } from "@/lib/types";
+import * as api from "@/lib/api";
+import { OfficialUsageBreakdown } from "@/pages/CreditStatsPage";
+import type { AccountMeta, CreditExpiry, CreditOfficialUsage, CreditResource, RateLimitEntry, TravelStatus } from "@/lib/types";
 
 const AVATAR_TONES = [
   "bg-emerald-100 text-emerald-800",
@@ -380,6 +382,27 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
 
 export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, travelStatus, rateLimits, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodeExtInstalled, vscodeExtExtensionInstalled, vscodeExtAvailable, vscodeExtActive, vscodeExtBusy, vscodeExtLoading, onSwitchVscodeExt, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageData, setUsageData] = useState<CreditOfficialUsage | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+
+  const loadAccountUsage = useCallback(async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      setUsageData(await api.getAccountOfficialUsage(account.id));
+    } catch (cause) {
+      setUsageError(api.asError(cause));
+    } finally {
+      setUsageLoading(false);
+    }
+  }, [account.id]);
+
+  const openAccountUsage = useCallback(() => {
+    setUsageOpen(true);
+    void loadAccountUsage();
+  }, [loadAccountUsage]);
   const [now, setNow] = useState(() => Date.now());
   /**
    * 限额图标要随官方恢复时刻自动消失（AC3），所以本地每秒走一次时钟。
@@ -649,7 +672,18 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             <div className="flex items-baseline gap-x-3 gap-y-1">
               <span className="flex items-center gap-1.5">
                 <Sparkles className="size-4 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
-                <strong className={cn("font-semibold leading-none tabular-nums tracking-[-0.025em]", compact ? "text-[20px]" : "text-[22px]")} style={{ fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif' }}>{formatCredits(credit.totalRemaining ?? 0)}</strong>
+                <button
+                  type="button"
+                  onClick={openAccountUsage}
+                  className={cn(
+                    "rounded cursor-pointer font-semibold leading-none tabular-nums tracking-tight text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+                    compact ? "text-[20px]" : "text-[22px]",
+                  )}
+                  style={{ fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif' }}
+                  title="查看积分消耗明细"
+                >
+                  {formatCredits(credit.totalRemaining ?? 0)}
+                </button>
               </span>
               <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>{resources.length} 个积分包</span>
               <div className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={expiringAmount > 0 ? `${formatCredits(expiringAmount)} 积分将在 7 天内到期` : resources[0]?.expireAt ? `最近到期 ${formatCreditExpiry(resources[0].expireAt).replace(" 到期", "")}` : "当前积分长期有效"}>
@@ -786,6 +820,30 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
               })}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={usageOpen} onOpenChange={setUsageOpen}>
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>积分消耗明细</DialogTitle>
+            <DialogDescription>{name} · 最近 100 条</DialogDescription>
+          </DialogHeader>
+          {usageLoading ? (
+            <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              正在加载积分消耗明细…
+            </div>
+          ) : usageError ? (
+            <div className="flex items-start gap-2 px-1 py-10 text-sm text-destructive">
+              <CircleAlert className="mt-0.5 size-4 shrink-0" />
+              <span>{usageError}</span>
+            </div>
+          ) : usageData ? (
+            <div className="max-h-[70vh] min-w-0 overflow-y-auto">
+              <OfficialUsageBreakdown officialUsage={usageData} accountId={account.id} />
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </TooltipProvider>

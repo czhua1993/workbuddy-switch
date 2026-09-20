@@ -205,6 +205,7 @@ pub fn run() {
             commands::get_checkin_status,
             commands::get_credit_expiry,
             commands::get_credit_statistics,
+            commands::get_account_official_usage,
             commands::get_token_statistics,
             commands::get_rate_limits,
             commands::get_rate_limit_hook_status,

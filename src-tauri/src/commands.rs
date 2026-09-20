@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 use tauri::Emitter;
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, credit_usage,
-    credits, export_import, limits, oauth, process, rate_limit_events, rate_limit_hook, refresh,
-    rotate, session, switch, token_stats, travel, update, variant::WbVariant, vscode_ext,
-    vscode_session,
+    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, official_usage,
+    credit_usage, credits, export_import, limits, oauth, process, rate_limit_events,
+    rate_limit_hook, refresh, rotate, session, switch, token_stats, travel, update,
+    variant::WbVariant, vscode_ext, vscode_session,
 };
 
 #[derive(Serialize)]
@@ -463,6 +463,18 @@ pub async fn get_credit_expiry(account_id: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn get_credit_statistics(refresh: Option<bool>) -> Value {
     credit_usage::get_statistics(refresh.unwrap_or(false)).await
+}
+
+/// GET /api/account-official-usage —— 单账号最近 `limit` 条积分消耗明细。
+/// 与积分统计页「请求用量」表同源同口径（每账号上限 `OFFICIAL_USAGE_DETAIL_LIMIT`），
+/// 仅供账号卡片点击弹窗按需加载，不写全量官方用量缓存。
+#[tauri::command]
+pub async fn get_account_official_usage(account_id: String) -> Value {
+    official_usage::official_usage_for_account_id(
+        &account_id,
+        official_usage::OFFICIAL_USAGE_DETAIL_LIMIT,
+    )
+    .await
 }
 
 #[tauri::command]

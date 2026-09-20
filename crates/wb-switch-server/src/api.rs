@@ -18,9 +18,9 @@ use serde_json::{json, Value};
 
 use wb_switch_core::modules::{
     account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, config,
-    credit_usage, credits, export_import, limits, oauth, process, rate_limit_events,
-    rate_limit_hook, refresh, rotate, session, switch, token_stats, travel, update,
-    variant::WbVariant, vscode_ext, vscode_session,
+    credit_usage, credits, export_import, limits, official_usage, oauth, process,
+    rate_limit_events, rate_limit_hook, refresh, rotate, session, switch, token_stats, travel,
+    update, variant::WbVariant, vscode_ext, vscode_session,
 };
 
 /// WorkBuddy 运行状态缓存：Windows 上检测要跑 tasklist（慢），缓存几秒避免
@@ -102,6 +102,7 @@ pub fn router() -> Router {
         .route("/api/checkin/status", get(api_checkin_status))
         .route("/api/credits", post(api_credits))
         .route("/api/credits/stats", get(api_credit_statistics))
+        .route("/api/account-official-usage", get(api_account_official_usage))
         .route("/api/token-stats", get(api_token_statistics))
         .route("/api/rate-limits", get(api_rate_limits))
         .route(
@@ -655,6 +656,21 @@ fn query_flag_enabled(query: Option<&str>, name: &str) -> bool {
 
 async fn api_credit_statistics(RawQuery(query): RawQuery) -> Response {
     json_ok(credit_usage::get_statistics(query_flag_enabled(query.as_deref(), "refresh")).await)
+}
+
+async fn api_account_official_usage(RawQuery(query): RawQuery) -> Response {
+    let account_id = query
+        .as_deref()
+        .and_then(|value| value.split('&').find_map(|part| part.strip_prefix("accountId=")))
+        .unwrap_or("")
+        .to_string();
+    json_ok(
+        official_usage::official_usage_for_account_id(
+            &account_id,
+            official_usage::OFFICIAL_USAGE_DETAIL_LIMIT,
+        )
+        .await,
+    )
 }
 
 async fn api_token_statistics(RawQuery(query): RawQuery) -> Response {

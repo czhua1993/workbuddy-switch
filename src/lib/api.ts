@@ -14,6 +14,7 @@ import type {
   CheckinResult,
   CreditExpiry,
   CreditStatistics,
+  CreditOfficialUsage,
   TokenStatistics,
   CopyResult,
   GithubConfig,
@@ -51,6 +52,7 @@ const DEMO_READ_COMMANDS = new Set([
   "get_status", "get_accounts", "get_codebuddy_cli_status", "get_codebuddy_cn_ide_status", "get_codebuddy_ide_status", "get_vscode_ext_status", "list_vscode_sessions", "get_checkin_status",
   "get_credit_expiry", "get_credit_statistics", "get_auto_checkin_config",
   "get_token_statistics",
+  "get_account_official_usage",
   "get_checkin_logs", "get_auto_rotate_config", "rotate_status", "get_rotate_logs",
   "get_github_config", "check_update", "get_launch_at_login_enabled", "switch_progress",
   "get_travel_status", "get_auto_travel_config", "get_rate_limits",
@@ -114,6 +116,7 @@ const ROUTES: Record<string, Route> = {
   get_credit_expiry: { method: "POST", path: "/api/credits" },
   get_credit_statistics: { method: "GET", path: "/api/credits/stats" },
   get_token_statistics: { method: "GET", path: "/api/token-stats" },
+  get_account_official_usage: { method: "GET", path: "/api/account-official-usage" },
   get_rate_limits: { method: "GET", path: "/api/rate-limits" },
   get_rate_limit_hook_status: { method: "GET", path: "/api/rate-limits/hook-status" },
   install_rate_limit_hook: { method: "POST", path: "/api/rate-limits/install-hook" },
@@ -546,6 +549,11 @@ export function getCreditExpiry(accountId: string): Promise<CreditExpiry> {
 
 export function getCreditStatistics(refresh = false): Promise<CreditStatistics> {
   return call("get_credit_statistics", refresh ? { refresh: true } : undefined);
+}
+
+/** 单账号最近 100 条积分消耗明细；与积分统计页「请求用量」表同源同口径。 */
+export function getAccountOfficialUsage(accountId: string): Promise<CreditOfficialUsage> {
+  return call("get_account_official_usage", { accountId });
 }
 
 /**
