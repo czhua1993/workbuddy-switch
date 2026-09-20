@@ -7,6 +7,14 @@ import type { AccountMeta, AppStatus, CreditExpiry, WbVariant } from "@/lib/type
 const creditInflight = new Set<string>();
 /** 状态查询按档位各留一个在途请求，避免切档位时复用另一档位的结果。 */
 let statusInflight: { variant: WbVariant; promise: Promise<AppStatus> } | undefined;
+/** 已在途的 fetchAll：切 Tab / 切档位并发触发时只发一轮。 */
+let fetchAllInflight: { variant: WbVariant; promise: Promise<void> } | undefined;
+let lastFetchAllAt = 0;
+/**
+ * 已有数据时的最小重拉间隔。
+ * 切 Tab 会重新挂载账号页，没有这道闸门时来回切换会反复打同一批请求。
+ */
+const FETCH_ALL_MIN_INTERVAL_MS = 5 * 1000;
 
 function fetchStatus(variant: WbVariant): Promise<AppStatus> {
   if (!statusInflight || statusInflight.variant !== variant) {
@@ -43,7 +51,8 @@ interface AccountsState {
   refreshingCredits: boolean;
   lastCreditRefreshAt: number;
   setVariant: (variant: WbVariant) => void;
-  fetchAll: () => Promise<void>;
+  /** `force`：忽略最小重拉间隔（切档位、导入、签到后等状态确实变了的场景）。 */
+  fetchAll: (opts?: { force?: boolean }) => Promise<void>;
   refreshStatus: (signal?: AbortSignal) => Promise<void>;
   deleteAccount: (id: string) => Promise<void>;
   /** Fetch credits only for ids not already cached. */
@@ -69,23 +78,41 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
   setVariant(variant) {
     const next = normalizeVariant(variant);
     if (get().variant === next) return;
-    set({ variant: next });
-    // 状态卡（运行中 / 当前账号 / 应用路径）随档位整体换一份。
-    void get().fetchAll();
+    // 状态卡（运行中 / 当前账号 / 应用路径）随档位整体换一份：先清空，
+    // 否则会短暂显示上一档位的运行/当前账号状态。
+    set({ variant: next, status: null });
+    void get().fetchAll({ force: true });
   },
 
-  async fetchAll() {
+  async fetchAll(opts) {
     const variant = get().variant;
-    set({ loading: true, error: null });
-    try {
-      const [status, { accounts }] = await Promise.all([fetchStatus(variant), api.getAccounts()]);
-      // 迟到结果不得覆盖已切换档位的状态。
-      if (get().variant !== variant) return;
-      set({ status, accounts, loading: false });
-    } catch (e) {
-      if (get().variant !== variant) return;
-      set({ error: api.asError(e), loading: false });
+    if (fetchAllInflight?.variant === variant) return fetchAllInflight.promise;
+
+    const hasData = get().accounts.length > 0 || get().status !== null;
+    if (!opts?.force && hasData && Date.now() - lastFetchAllAt < FETCH_ALL_MIN_INTERVAL_MS) {
+      return;
     }
+    // 已有数据时静默刷新：置 loading 会让切回账号页闪一下「加载账号…」。
+    if (hasData) set({ error: null });
+    else set({ loading: true, error: null });
+
+    const promise = (async () => {
+      try {
+        const [status, { accounts }] = await Promise.all([fetchStatus(variant), api.getAccounts()]);
+        // 迟到结果不得覆盖已切换档位的状态。
+        if (get().variant !== variant) return;
+        set({ status, accounts, loading: false });
+        lastFetchAllAt = Date.now();
+      } catch (e) {
+        if (get().variant !== variant) return;
+        set({ error: api.asError(e), loading: false });
+      } finally {
+        // 只清自己这一轮：期间若已切到另一档位，新档位的在途请求不能被清掉。
+        if (fetchAllInflight?.variant === variant) fetchAllInflight = undefined;
+      }
+    })();
+    fetchAllInflight = { variant, promise };
+    return promise;
   },
 
   async refreshStatus(signal) {

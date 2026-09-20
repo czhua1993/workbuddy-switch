@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { DemoAction } from "@/components/demo-action";
 import { useAccountsStore } from "@/stores/accounts";
+import { useAccountStatusStore } from "@/stores/account-status";
 
 interface SettingsGroupProps {
   id: string;
@@ -152,6 +153,8 @@ function AutoCheckinCard() {
     try {
       const saved = await api.saveAutoCheckinConfig(cfg);
       setCfg(saved);
+      // 账号页的自动签到配置带 TTL 缓存：保存后失效，回去能立刻看到新值
+      useAccountStatusStore.getState().invalidateConfig();
       setMsg({ type: "ok", text: "配置已保存" });
     } catch (e) {
       setMsg({ type: "err", text: api.asError(e) });
@@ -964,6 +967,8 @@ function RateLimitCard() {
     try {
       // 整个配置一起提交：只带 enabled 会把「卸载过」标记冲掉，重启后 hook 又被自动装回。
       setConfig(await api.saveRateLimitConfig({ ...config, enabled }));
+      // 账号页的限额开关带 TTL 缓存：保存后失效，回去不会沿用旧开关
+      useAccountStatusStore.getState().invalidateConfig();
       setMsg({ type: "ok", text: enabled ? "限额监听已开启" : "限额监听已关闭" });
     } catch (e) {
       setConfig(previous);
@@ -986,6 +991,8 @@ function RateLimitCard() {
     try {
       // 与总开关一样整份提交：只带 scanIdeLogs 会把 enabled / hookOptOut 冲成默认值。
       setConfig(await api.saveRateLimitConfig({ ...config, scanIdeLogs }));
+      // 日志来源变了：账号页的台账缓存需重扫，回账号页才看得到新结果
+      useAccountStatusStore.getState().invalidateRateLimits();
       setMsg({
         type: "ok",
         text: scanIdeLogs

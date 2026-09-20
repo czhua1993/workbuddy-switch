@@ -425,6 +425,89 @@ export function revealAppInFinder(): Promise<void> {
 // 阶段 3：签到 + token 刷新
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// webui 批量接口缓存
+// ---------------------------------------------------------------------------
+
+/**
+ * webui 的签到 / 旅行接口一次返回**全部账号**，而账号页是按账号逐个查询的：
+ * 不缓存时 N 个账号 = N 次批量请求 = N×N 次上游调用。这里按 id 缓存批量结果。
+ *
+ * 缓存只在 webui 生效（桌面端走 Tauri invoke，本来就是单账号命令）。
+ * 签到 / 派发旅行后必须调用对应的 `invalidate*Batch()`，否则会读到旧状态。
+ */
+const BATCH_CACHE_TTL_MS = 30 * 1000;
+
+type CheckinBatchEntry = {
+  accountId: string;
+  email: string;
+  ok: boolean;
+  todayCheckedIn: boolean;
+  error?: string;
+  raw?: unknown;
+  variant?: WbVariant;
+};
+
+type TravelBatchEntry = {
+  accountId: string;
+  email: string;
+  label: TravelStatus["label"];
+  rewardCredit: number | null;
+  locationName?: string | null;
+  arriveAt?: number | null;
+};
+
+interface BatchCache<T> {
+  at: number;
+  byId: Map<string, T>;
+}
+
+let checkinBatch: BatchCache<CheckinBatchEntry> | undefined;
+let travelBatch: BatchCache<TravelBatchEntry> | undefined;
+let checkinBatchInflight: Promise<Map<string, CheckinBatchEntry>> | undefined;
+let travelBatchInflight: Promise<Map<string, TravelBatchEntry>> | undefined;
+
+/** 签到后调用：下一次查询重新拉批量结果。 */
+export function invalidateCheckinBatch(): void {
+  checkinBatch = undefined;
+}
+
+/** 派发/领取旅行后调用：下一次查询重新拉批量结果。 */
+export function invalidateTravelBatch(): void {
+  travelBatch = undefined;
+}
+
+async function loadCheckinBatch(): Promise<Map<string, CheckinBatchEntry>> {
+  if (checkinBatch && Date.now() - checkinBatch.at < BATCH_CACHE_TTL_MS) return checkinBatch.byId;
+  // 并发的按需查询共用在途请求，避免同时打出多份批量调用。
+  if (checkinBatchInflight) return checkinBatchInflight;
+  checkinBatchInflight = httpCall<{ accounts: CheckinBatchEntry[] }>("get_checkin_status")
+    .then((all) => {
+      const byId = new Map((all.accounts ?? []).map((a) => [a.accountId, a]));
+      checkinBatch = { at: Date.now(), byId };
+      return byId;
+    })
+    .finally(() => {
+      checkinBatchInflight = undefined;
+    });
+  return checkinBatchInflight;
+}
+
+async function loadTravelBatch(): Promise<Map<string, TravelBatchEntry>> {
+  if (travelBatch && Date.now() - travelBatch.at < BATCH_CACHE_TTL_MS) return travelBatch.byId;
+  if (travelBatchInflight) return travelBatchInflight;
+  travelBatchInflight = httpCall<{ accounts: TravelBatchEntry[] }>("get_travel_status")
+    .then((all) => {
+      const byId = new Map((all.accounts ?? []).map((a) => [a.accountId, a]));
+      travelBatch = { at: Date.now(), byId };
+      return byId;
+    })
+    .finally(() => {
+      travelBatchInflight = undefined;
+    });
+  return travelBatchInflight;
+}
+
 export async function getCheckinStatus(accountId: string): Promise<{
   ok: boolean;
   todayCheckedIn: boolean;
@@ -442,19 +525,8 @@ export async function getCheckinStatus(accountId: string): Promise<{
     };
   }
   if (isWebui()) {
-    // webui 端为批量接口，按 accountId 过滤
-    const all = await httpCall<{
-      accounts: {
-        accountId: string;
-        email: string;
-        ok: boolean;
-        todayCheckedIn: boolean;
-        error?: string;
-        raw?: unknown;
-        variant?: WbVariant;
-      }[];
-    }>("get_checkin_status");
-    const one = all.accounts.find((a) => a.accountId === accountId);
+    // webui 端为批量接口，按 accountId 过滤（带 TTL 缓存，见 loadCheckinBatch）
+    const one = (await loadCheckinBatch()).get(accountId);
     return one
       ? {
           ok: one.ok,
@@ -552,11 +624,8 @@ export async function getTravelStatus(accountId: string): Promise<TravelStatus> 
     return screenshotDemoResponse("get_travel_status", { accountId }) as TravelStatus;
   }
   if (isWebui()) {
-    // webui 端为批量接口，按 accountId 过滤
-    const all = await httpCall<{
-      accounts: { accountId: string; email: string; label: TravelStatus["label"]; rewardCredit: number | null; locationName?: string | null; arriveAt?: number | null }[];
-    }>("get_travel_status");
-    const one = all.accounts.find((a) => a.accountId === accountId);
+    // webui 端为批量接口，按 accountId 过滤（带 TTL 缓存，见 loadTravelBatch）
+    const one = (await loadTravelBatch()).get(accountId);
     return one
       ? { label: one.label, rewardCredit: one.rewardCredit, locationName: one.locationName ?? null, arriveAt: one.arriveAt ?? null }
       : { label: "untraveled", rewardCredit: null, locationName: null, arriveAt: null };

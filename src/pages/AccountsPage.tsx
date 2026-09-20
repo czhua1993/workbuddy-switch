@@ -59,10 +59,10 @@ import {
   variantSupportsTravel,
   variantUsesIntlCodebuddyIde,
 } from "@/lib/variant";
-import type { AccountMeta, AppStatus, CheckinConfig, CodeBuddyCliStatus, CodeBuddyCnIdeStatus, CreditExpiry, RateLimitEntry, TravelConfig, TravelStatus } from "@/lib/types";
-import type { VscodeExtStatus } from "@/lib/types";
+import type { AccountMeta, AppStatus, CreditExpiry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAccountsStore } from "@/stores/accounts";
+import { useAccountStatusStore } from "@/stores/account-status";
 
 /**
  * 账号页两个轮询的间隔（都经 `useVisibleInterval` 门控，仅主窗口可见时执行）。
@@ -108,52 +108,6 @@ function isWorkbuddyCurrent(account: AccountMeta, current: AppStatus["current"] 
   );
 }
 
-/** 并行查询今日签到；失败的账号不写入，由调用方保留原值。 */
-async function fetchTodayCheckinMap(
-  accountIds: string[],
-  isStale?: () => boolean,
-): Promise<Record<string, boolean>> {
-  const entries = await Promise.all(
-    accountIds.map(async (id) => {
-      try {
-        const res = await api.getCheckinStatus(id);
-        if (isStale?.() || !res.ok) return null;
-        return [id, res.todayCheckedIn] as const;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const next: Record<string, boolean> = {};
-  for (const entry of entries) {
-    if (entry) next[entry[0]] = entry[1];
-  }
-  return next;
-}
-
-/** 并行查询各账号今日旅行状态；失败的账号不写入，由调用方保留原值。 */
-async function fetchTravelMap(
-  accountIds: string[],
-  isStale?: () => boolean,
-): Promise<Record<string, TravelStatus>> {
-  const entries = await Promise.all(
-    accountIds.map(async (id) => {
-      try {
-        const res = await api.getTravelStatus(id);
-        if (isStale?.()) return null;
-        return [id, res] as const;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  const next: Record<string, TravelStatus> = {};
-  for (const entry of entries) {
-    if (entry) next[entry[0]] = entry[1];
-  }
-  return next;
-}
-
 export default function AccountsPage() {
   const {
     accounts,
@@ -172,31 +126,39 @@ export default function AccountsPage() {
     ensureCredits,
     refreshCredits,
   } = useAccountsStore();
+  // 签到 / 旅行 / 限额 / 目标应用状态都放在 store 里带缓存：切 Tab 重新挂载直接命中，
+  // 不再每次进来重拉一遍（详见 stores/account-status.ts）。
+  const {
+    checkinMap,
+    travelMap,
+    rateLimitMap,
+    rateLimitEnabled,
+    autoCheckinConfig,
+    autoTravelConfig,
+    codebuddyCli,
+    codebuddyCnIde,
+    vscodeExt,
+    ensureCheckin,
+    ensureTravel,
+    ensureRateLimits,
+    ensureRateLimitConfig,
+    ensureAutoCheckinConfig,
+    ensureAutoTravelConfig,
+    ensureAppStatus,
+    setAutoCheckinConfig,
+    setAutoTravelConfig,
+    forgetAccount,
+    invalidateCheckin,
+  } = useAccountStatusStore();
   const [oauthOpen, setOauthOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [switchAccount, setSwitchAccount] = useState<AccountMeta | null>(null);
   const [importing, setImporting] = useState(false);
-  const [autoCheckinConfig, setAutoCheckinConfig] = useState<CheckinConfig | null>(null);
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
-  /** 账号 id -> 今日是否已签到（undefined=查询中/未知） */
-  const [checkinMap, setCheckinMap] = useState<Record<string, boolean>>({});
-  const [autoTravelConfig, setAutoTravelConfig] = useState<TravelConfig | null>(null);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
-  /** 账号 id -> 今日旅行状态（undefined=查询中/未知） */
-  const [travelMap, setTravelMap] = useState<Record<string, TravelStatus>>({});
-  /** 账号 id -> 当前受限的模型（数据源 = 后端限额台账：hook 信号 + 日志扫描） */
-  const [rateLimitMap, setRateLimitMap] = useState<Record<string, RateLimitEntry[]>>({});
-  /**
-   * 「限额监听」开关（设置页）：关闭后不扫描、不渲染限额 chip。
-   * `null` = 配置尚未读到，不得按默认 true 先扫一轮（关闭开关后进账号页会闪 chip / 误请求）。
-   */
-  const [rateLimitEnabled, setRateLimitEnabled] = useState<boolean | null>(null);
-  const [codebuddyCli, setCodebuddyCli] = useState<CodeBuddyCliStatus | null>(null);
   const [codebuddyCliSwitchingId, setCodebuddyCliSwitchingId] = useState<string | null>(null);
-  const [codebuddyCnIde, setCodebuddyCnIde] = useState<CodeBuddyCnIdeStatus | null>(null);
   const [codebuddyCnIdeSwitchingId, setCodebuddyCnIdeSwitchingId] = useState<string | null>(null);
-  const [vscodeExt, setVscodeExt] = useState<VscodeExtStatus | null>(null);
   /** VS Code 扩展切换弹窗目标（null=关闭）；切换与可选会话复制在弹窗内完成。 */
   const [vscodeSwitchAccount, setVscodeSwitchAccount] = useState<AccountMeta | null>(null);
   const [installingCodebuddyCli, setInstallingCodebuddyCli] = useState(false);
@@ -247,37 +209,27 @@ export default function AccountsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .getAutoCheckinConfig()
-      .then((config) => {
-        if (!cancelled) setAutoCheckinConfig(config);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          toast.error("自动签到配置加载失败", { description: api.asError(e) });
-        }
-      });
+    void ensureAutoCheckinConfig().then((message) => {
+      if (!cancelled && message) {
+        toast.error("自动签到配置加载失败", { description: message });
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ensureAutoCheckinConfig]);
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .getAutoTravelConfig()
-      .then((config) => {
-        if (!cancelled) setAutoTravelConfig(config);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          toast.error("自动旅行配置加载失败", { description: api.asError(e) });
-        }
-      });
+    void ensureAutoTravelConfig().then((message) => {
+      if (!cancelled && message) {
+        toast.error("自动旅行配置加载失败", { description: message });
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ensureAutoTravelConfig]);
 
   /**
    * 首次启动自动导入本机账号（本会话只尝试一次，无本机账号时静默）。
@@ -289,148 +241,58 @@ export default function AccountsPage() {
     if (autoImportTried.current || loading || visibleAccounts.length > 0) return;
     autoImportTried.current = true;
     void importLocal()
-      .then(() => void fetchAll())
+      .then(() => void fetchAll({ force: true }))
       .catch(() => {
         /* 本机无 WorkBuddy 登录态时静默，不打扰用户 */
       });
   }, [variant, visibleAccounts.length, loading, importLocal, fetchAll]);
 
-  async function refreshCodebuddyCliStatus() {
-    try {
-      setCodebuddyCli(await api.getCodebuddyCliStatus());
-    } catch {
-      setCodebuddyCli(null);
-    }
-  }
-
-  async function refreshCodebuddyCnIdeStatus() {
-    try {
-      setCodebuddyCnIde(
-        variantUsesIntlCodebuddyIde(variant)
-          ? await api.getCodebuddyIdeStatus()
-          : await api.getCodebuddyCnIdeStatus(),
-      );
-    } catch {
-      setCodebuddyCnIde(null);
-    }
-  }
-
-  async function refreshVscodeExtStatus() {
-    try {
-      setVscodeExt(await api.getVscodeExtStatus());
-    } catch {
-      setVscodeExt(null);
-    }
-  }
-
+  // 挂载时刷新目标应用状态（CodeBuddy CLI / IDE / VS Code 扩展）：store 内按 TTL +
+  // 钥匙串探测间隔决定是否真发请求，切回账号页不会重新探测一遍。
+  // 切档位要读的是另一套应用（国际版读 CodeBuddy.app 钥匙串），必须 force。
+  const lastStatusVariantRef = useRef(variant);
   useEffect(() => {
-    let cancelled = false;
-    void refreshCodebuddyCliStatus();
-    void (async () => {
-      if (!api.isDemoMode()) {
-        try {
-          // 国际版探测 CodeBuddy.app 钥匙串；国内版探测 CodeBuddy CN。不要交叉读。
-          if (variantUsesIntlCodebuddyIde(variant)) {
-            await api.detectCodebuddyIdeAccount();
-          } else {
-            await api.detectCodebuddyCnIdeAccount();
-          }
-        } catch {
-          /* 未登录或钥匙串拒绝时静默，下面仍拉安装/运行状态 */
-        }
-        try {
-          await api.detectVscodeExtAccount();
-        } catch {
-          /* VS Code 未登录或 Safe Storage 不可用时静默 */
-        }
-      }
-      if (!cancelled) {
-        await refreshCodebuddyCnIdeStatus();
-        await refreshVscodeExtStatus();
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [accounts.length, variant]);
+    const force = lastStatusVariantRef.current !== variant;
+    lastStatusVariantRef.current = variant;
+    void ensureAppStatus(variant, force ? { force: true } : undefined);
+  }, [accounts.length, variant, ensureAppStatus]);
 
   // 当前档位账号列表变化后并行查询各账号今日签到状态
   // 国际版没有签到接口：不查询状态（后端也不发请求）。
+  // store 内按 TTL + 跨天失效决定是否真发请求，切回账号页直接命中缓存。
   useEffect(() => {
     if (!visibleAccounts.length || !checkinAvailable) return;
-    let cancelled = false;
-    void fetchTodayCheckinMap(
-      visibleAccounts.map((account) => account.id),
-      () => cancelled,
-    ).then((next) => {
-      if (!cancelled && Object.keys(next).length > 0) {
-        setCheckinMap((prev) => ({ ...prev, ...next }));
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [visibleAccounts, checkinAvailable]);
-
-  async function loadTravelMap(accountIds: string[], isStale?: () => boolean) {
-    const next = await fetchTravelMap(accountIds, isStale);
-    if (!isStale?.() && Object.keys(next).length > 0) {
-      setTravelMap((prev) => ({ ...prev, ...next }));
-    }
-  }
+    void ensureCheckin(visibleAccounts.map((account) => account.id));
+  }, [visibleAccounts, checkinAvailable, ensureCheckin]);
 
   // 当前档位账号列表变化后并行查询旅行状态；之后按 TRAVEL_REFRESH_INTERVAL_MS 周期刷新，
   // 以反映后台派发/领取循环带来的状态变化。仅主窗口可见时轮询，隐藏时暂停。
   // 成长中心仅国内版开放，国际版不发请求也不展示标签。
+  // 轮询回调走 store 的 ensure：挂载时的立即执行也不会重复打已缓存的请求。
   const travelAccountIds = useMemo(
     () => visibleAccounts.map((account) => account.id),
     [visibleAccounts],
   );
   useVisibleInterval(
-    () => void loadTravelMap(travelAccountIds),
+    () => void ensureTravel(travelAccountIds),
     TRAVEL_REFRESH_INTERVAL_MS,
     travelAvailable && travelAccountIds.length > 0,
   );
 
   /**
-   * 模型限额台账（后端合并两条通路）：一次返回全部账号，这里转成「账号 id -> 受限模型」。
+   * 模型限额台账（后端合并两条通路）：拉取、5 分钟节流与「账号 id -> 受限模型」转换都在
+   * store 的 `ensureRateLimits` 里，节流不再随组件卸载丢失。
    *
    * 容错：老版本后端没有该命令、或扫描失败时按「无受限模型」处理（清空映射），
    * 不弹错误、不影响账号页其它功能。
    */
-  const lastRateLimitScanRef = useRef(0);
-
-  async function loadRateLimits(options?: { force?: boolean }) {
-    if (rateLimitEnabled !== true) return;
-    const scannedAt = lastRateLimitScanRef.current;
-    if (
-      !options?.force &&
-      scannedAt > 0 &&
-      Date.now() - scannedAt < RATE_LIMIT_REFRESH_INTERVAL_MS
-    ) {
-      return;
-    }
-    try {
-      const payload = await api.getRateLimits();
-      // `scannedAt` 是后端最近一次真实日志扫描的时刻：下一次扫描要等它满 5 分钟。
-      lastRateLimitScanRef.current = payload.scannedAt || Date.now();
-      const next: Record<string, RateLimitEntry[]> = {};
-      for (const entry of payload.accounts ?? []) {
-        if (entry.limited?.length) next[entry.accountId] = entry.limited;
-      }
-      setRateLimitMap(next);
-    } catch {
-      setRateLimitMap({});
-    }
-  }
-
-  const loadRateLimitsRef = useRef(loadRateLimits);
-  loadRateLimitsRef.current = loadRateLimits;
+  const loadRateLimitsRef = useRef(ensureRateLimits);
+  loadRateLimitsRef.current = ensureRateLimits;
 
   // 兜底轮询：页面可见且距上次扫描 ≥ 5 分钟时拉一次（IDE 日志扫描在后端按同一间隔节流）。
   // 图标何时消失由卡片本地按 `resetAt` 每秒判定（跨过官方重置时刻自动消失），不依赖这里的轮询。
   useVisibleInterval(
-    () => void loadRateLimits(),
+    () => void loadRateLimitsRef.current(),
     RATE_LIMIT_REFRESH_INTERVAL_MS,
     rateLimitEnabled === true,
   );
@@ -448,23 +310,11 @@ export default function AccountsPage() {
     return () => unlisten?.();
   }, []);
 
-  // 「限额监听」开关（设置页）：关闭后不再发起扫描；开关状态来自后端配置文件，
-  // 设置页改完返回账号页会重新挂载并读到新值。
+  // 「限额监听」开关（设置页）：关闭后不再发起扫描；开关配置在 store 里带 TTL 缓存，
+  // 读到开启时会顺带补一轮台账。
   useEffect(() => {
-    let cancelled = false;
-    void api
-      .getRateLimitConfig()
-      .then((config) => {
-        if (!cancelled) setRateLimitEnabled(config.enabled);
-      })
-      .catch(() => {
-        // 旧版本后端没有该命令：按默认开启，不影响账号页其它功能。
-        if (!cancelled) setRateLimitEnabled(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void ensureRateLimitConfig();
+  }, [ensureRateLimitConfig]);
 
   // 只给尚未缓存的账号拉积分；切回首页不重复请求。点「刷新积分」才强制更新。
   useEffect(() => {
@@ -510,8 +360,12 @@ export default function AccountsPage() {
       setAutoTravelConfig(await api.saveAutoTravelConfig(next));
       if (enabled) {
         toast.success("自动旅行已开启", { description: "正在按官方状态派发或领取" });
+        // 后台派发需要一点时间，稍后强制重拉一次（跳过 TTL）
         window.setTimeout(() => {
-          void loadTravelMap(visibleAccounts.map((account) => account.id));
+          void ensureTravel(
+            visibleAccounts.map((account) => account.id),
+            { force: true },
+          );
         }, 2500);
       }
     } catch (e) {
@@ -530,7 +384,7 @@ export default function AccountsPage() {
 
   /** 导入完成提示：计数 + token 可能过期提醒，并刷新列表。 */
   function onImported(result: { imported: number; skipped: number; overwritten: number }) {
-    void fetchAll();
+    void fetchAll({ force: true });
     const overwriteText = result.overwritten > 0 ? `（覆盖 ${result.overwritten} 个）` : "";
     const text = `已导入 ${result.imported} 个${overwriteText}，跳过 ${result.skipped} 个。token 可能已过期，切换后可能需要重新登录。`;
     toast.success("导入成功", { description: text });
@@ -547,6 +401,7 @@ export default function AccountsPage() {
     setDeleteTarget(null);
     try {
       await deleteAccount(a.id);
+      forgetAccount(a.id);
       toast.success("账号已删除");
     } catch (e) {
       toast.error("删除失败", { description: api.asError(e) });
@@ -565,14 +420,10 @@ export default function AccountsPage() {
       const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
-      // 刷新该账号的今日签到状态
-      try {
-        const st = await api.getCheckinStatus(a.id);
-        if (st.ok) setCheckinMap((prev) => ({ ...prev, [a.id]: st.todayCheckedIn }));
-      } catch {
-        /* ignore */
-      }
-      void fetchAll();
+      // 刷新该账号的今日签到状态：先失效（webui 批量缓存里还是旧值），再重查一次
+      invalidateCheckin([a.id]);
+      void ensureCheckin([a.id]);
+      void fetchAll({ force: true });
       // 签到成功/已签到会带来积分变动，force 刷新该账号积分
       if (res.result !== "error") void refreshCredits([a.id]);
     } catch (e) {
@@ -589,7 +440,7 @@ export default function AccountsPage() {
       } else {
         toast.success("Token 已刷新", { description: label });
       }
-      void fetchAll();
+      void fetchAll({ force: true });
     } catch (e) {
       toast.error("Token 刷新失败", { description: api.asError(e) });
     }
@@ -637,16 +488,14 @@ export default function AccountsPage() {
             toast.success("签到完成", { description: summary });
           }
           // 批量签到后重查当前档位账号的今日签到状态，无需切换页面即反映最新结果
-          const next = await fetchTodayCheckinMap(ids);
-          if (Object.keys(next).length > 0) {
-            setCheckinMap((prev) => ({ ...prev, ...next }));
-          }
+          invalidateCheckin(ids);
+          await ensureCheckin(ids, { force: true });
         } catch (e) {
           toast.error("批量签到失败", { description: api.asError(e) });
         }
       }
       await refreshCredits(ids);
-      if (travelAvailable) await loadTravelMap(ids);
+      if (travelAvailable) await ensureTravel(ids, { force: true });
       toast.success("积分到期情况已刷新");
     } finally {
       setCheckinAllRunning(false);
@@ -669,7 +518,7 @@ export default function AccountsPage() {
     try {
       // 后端一律先关闭正在运行的 CLI 再写状态（`closeRunningCli` 入参已废弃）。
       const result = await api.switchCodebuddyCliAccount(account.id);
-      await refreshCodebuddyCliStatus();
+      await ensureAppStatus(variant, { force: true });
       toast.success("CodeBuddy CLI 默认账号已更新", {
         id: toastId,
         description: `${account.nickname || account.email || account.id}：${result.message || "配置已更新"}`,
@@ -694,7 +543,7 @@ export default function AccountsPage() {
       const result = variantUsesIntlCodebuddyIde(variant)
         ? await api.switchCodebuddyIdeAccount(account.id, true)
         : await api.switchCodebuddyCnIdeAccount(account.id, true);
-      await refreshCodebuddyCnIdeStatus();
+      await ensureAppStatus(variant, { force: true });
       toast.success("CodeBuddy IDE 已切换", {
         id: toastId,
         description: result.message || result.account,
@@ -720,7 +569,7 @@ export default function AccountsPage() {
     try {
       const result = await api.installCodebuddyCliHelper();
       toast.success("CodeBuddy CLI 接入已更新", { description: result.message });
-      await refreshCodebuddyCliStatus();
+      await ensureAppStatus(variant, { force: true });
     } catch (error) {
       toast.error("CodeBuddy CLI 接入失败", { description: api.asError(error) });
     } finally {
@@ -1149,9 +998,8 @@ export default function AccountsPage() {
         }}
         account={switchAccount}
         onDone={() => {
-          void fetchAll();
-          void refreshCodebuddyCliStatus();
-          void refreshCodebuddyCnIdeStatus();
+          void fetchAll({ force: true });
+          void ensureAppStatus(variant, { force: true });
         }}
       />
       <VscodeSwitchAccountDialog
@@ -1162,7 +1010,7 @@ export default function AccountsPage() {
         account={vscodeSwitchAccount}
         vscodeExtStatus={vscodeExt}
         onDone={() => {
-          void refreshVscodeExtStatus();
+          void ensureAppStatus(variant, { force: true });
         }}
       />
 
