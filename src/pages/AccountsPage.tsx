@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { AccountCard } from "@/components/account-card";
+import { CleanupSessionsDialog } from "@/components/cleanup-sessions-dialog";
 import { DemoAction } from "@/components/demo-action";
 import {
   CodeBuddyAiIdeMark,
@@ -154,6 +155,7 @@ export default function AccountsPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [switchAccount, setSwitchAccount] = useState<AccountMeta | null>(null);
+  const [cleanupAccount, setCleanupAccount] = useState<AccountMeta | null>(null);
   const [importing, setImporting] = useState(false);
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
@@ -956,6 +958,7 @@ export default function AccountsPage() {
                 compact={compact}
                 onDelete={onDelete}
                 onSwitch={setSwitchAccount}
+                onCleanupSessions={setCleanupAccount}
                 onCheckin={onCheckin}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
@@ -1022,6 +1025,16 @@ export default function AccountsPage() {
         vscodeExtStatus={vscodeExt}
         onDone={() => {
           void ensureAppStatus(variant, { force: true });
+        }}
+      />
+      <CleanupSessionsDialog
+        open={cleanupAccount !== null}
+        onOpenChange={(o) => {
+          if (!o) setCleanupAccount(null);
+        }}
+        account={cleanupAccount}
+        onCleaned={() => {
+          void fetchAll();
         }}
       />
 

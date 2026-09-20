@@ -808,3 +808,15 @@ export function clearNotifications(): Promise<{ cleared: boolean }> {
   if (demoModeEnabled) return Promise.resolve({ cleared: false });
   return call("clear_notifications");
 }
+
+/** 清理旧会话报告（宽松结构，按需取字段）。 */
+export type CleanupReport = Record<string, unknown>;
+
+/** 清理旧会话：每 cwd 保留最新 keep 条，已上云的同步删云端；dryRun 只出报告。 */
+export function cleanupSessions(args: {
+  accountId: string;
+  keep?: number;
+  dryRun?: boolean;
+}): Promise<CleanupReport> {
+  return call("cleanup_sessions", args as unknown as Record<string, unknown>);
+}

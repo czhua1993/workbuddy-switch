@@ -391,7 +391,7 @@ fn find_project_jsonl(paths: &SessionPaths, cid: &str) -> Option<PathBuf> {
 ///
 /// 任何一步失败都返回 Err——不能沿用「忽略 copy 错误后仍宣称备份成功」的旧行为，
 /// 备份不可信时后续数据库写入必须先停下来（design §1）。
-fn backup_workbuddy_db(paths: &SessionPaths, backup_root: &Path) -> Result<PathBuf, String> {
+pub(crate) fn backup_workbuddy_db(paths: &SessionPaths, backup_root: &Path) -> Result<PathBuf, String> {
     let db = paths.workbuddy_db();
     if !db.is_file() {
         return Err("会话数据不存在，未复制".to_string());
@@ -3462,6 +3462,7 @@ mod tests {
         assert!(cn
             .workbuddy_db()
             .to_string_lossy()
+            .replace('\\', "/")
             .ends_with(".workbuddy/workbuddy.db"));
         // 映射库文件名交给解析器：真实数据根可能是任意版本（WorkBuddy 5.6 已迁移到
         // v4 且 v2/v3 残留并存），这里只断言落在国内版数据根下的 edge-sync-mapping-*.db，
