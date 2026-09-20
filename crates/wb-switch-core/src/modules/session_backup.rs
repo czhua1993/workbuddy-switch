@@ -1023,6 +1023,7 @@ mod tests {
             .is_dir());
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinked_transaction_dir_is_preserved() {
         let dir = TempDir::new("symlink");
