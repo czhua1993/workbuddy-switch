@@ -385,6 +385,8 @@ export interface CreditOfficialUsageRequest {
   model: string;
   client: string;
   requestTime: string;
+  /** 请求内容预览（后端截断到 120 字符并压平空白）；缺省兼容旧后端与旧缓存。 */
+  input?: string | null;
 }
 
 export interface CreditOfficialUsageError {

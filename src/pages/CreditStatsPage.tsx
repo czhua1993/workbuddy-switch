@@ -1032,6 +1032,9 @@ function OfficialRequestRow({
       <td className="max-w-[120px] truncate px-3 py-3 text-muted-foreground" title={request.client}>
         {request.client}
       </td>
+      <td className="max-w-[280px] truncate px-3 py-3" title={request.input || undefined}>
+        {request.input?.trim() ? request.input : "—"}
+      </td>
       <td className="max-w-[170px] truncate px-3 py-3 font-mono text-[10px] text-muted-foreground" title={request.requestId}>
         {request.requestId}
       </td>
@@ -1039,7 +1042,7 @@ function OfficialRequestRow({
   );
 }
 
-function OfficialUsageBreakdown({
+export function OfficialUsageBreakdown({
   officialUsage,
   accountId,
 }: {
@@ -1098,7 +1101,7 @@ function OfficialUsageBreakdown({
         </div>
       ) : (
         <div className="min-w-0 overflow-x-auto">
-          <table className="w-full min-w-[700px] text-left text-[11px]">
+          <table className="w-full min-w-[960px] text-left text-[11px]">
             <thead className="sticky top-0 bg-muted/95 text-muted-foreground">
               <tr>
                 <th className="px-3 py-2.5 font-medium">请求时间</th>
@@ -1106,6 +1109,7 @@ function OfficialUsageBreakdown({
                 <th className="px-3 py-2.5 text-right font-medium">消耗</th>
                 <th className="px-3 py-2.5 font-medium">模型</th>
                 <th className="px-3 py-2.5 font-medium">客户端</th>
+                <th className="px-3 py-2.5 font-medium">请求</th>
                 <th className="px-3 py-2.5 font-medium">请求 ID</th>
               </tr>
             </thead>

@@ -214,6 +214,15 @@ function visibleRequests(accountIndex: number) {
   const flashCredits = [0.13, 0.04, 0.2, 1, 0.08, 3.99, 0.45, 8.5, 24.56];
   const kimiCredits = [86.4, 103.2, 112.8, 128.4, 74.6];
   const proCredits = [0.04, 0.13, 0.2, 0.45];
+  const inputSamples = [
+    "帮我把这个函数重构成异步版本，并补上单元测试",
+    "解释一下这段 SQL 为什么走不上索引",
+    "给列表页加空状态，并补齐无障碍属性",
+    "按现在的接口契约生成一份 TypeScript 类型定义",
+    "这个报错在 Windows 上必现，帮我定位根因",
+    "把这段逻辑里的重复代码抽成公共方法",
+    "写一段脚本批量重命名目录下的文件",
+  ];
   const weightedModels = seed.models.flatMap((model) =>
     Array.from({ length: Math.max(1, Math.round((model.requestCount / seed.requestCount) * 100)) }, () => model.model),
   );
@@ -243,6 +252,7 @@ function visibleRequests(accountIndex: number) {
       model,
       client: rowIndex % 50 === 0 ? "CodeBuddyIDE" : "CLI",
       requestTime: `${localDate(daysAgo)} ${String(ts.getHours()).padStart(2, "0")}:${String(ts.getMinutes()).padStart(2, "0")}:00`,
+      input: inputSamples[(rowIndex + accountIndex * 3) % inputSamples.length],
     };
   });
 }
@@ -599,6 +609,13 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_checkin_status": return { ok: true, todayCheckedIn: true };
     case "get_credit_expiry": return creditExpiry(String(args?.accountId ?? ""));
     case "get_credit_statistics": return buildStatistics();
+    case "get_account_official_usage": {
+      const id = String(args?.accountId ?? "");
+      const ou = buildStatistics().officialUsage!;
+      const account = ou.accounts.find((a) => a.accountId === id) ?? ou.accounts[0];
+      const requests = ou.requests.filter((r) => r.accountId === id);
+      return { ...ou, accounts: account ? [account] : [], requests };
+    }
     case "get_token_statistics": return demoTokenStatistics(typeof args?.days === "number" ? args.days : undefined);
     case "get_auto_checkin_config": return checkinConfig();
     case "get_checkin_logs": return { logs: checkinLogs() };

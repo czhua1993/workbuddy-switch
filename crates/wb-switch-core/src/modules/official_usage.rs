@@ -2,7 +2,10 @@
 //!
 //! 这里负责请求最近 31 个自然日、处理分页、校验和归一化明细，并只向上层
 //! 暴露统计字段与有限的请求摘要。投影会写入本地缓存，避免每次打开统计页
-//! 都打官方用量接口；上游可能携带的 prompt/input 等字段永远不会被复制。
+//! 都打官方用量接口。
+//!
+//! 请求内容只保留**截断后的单行预览**（`INPUT_PREVIEW_LIMIT`），用来在明细表里
+//! 认出「是哪次请求」；完整 prompt 与未登记的上游字段既不进入投影也不落缓存。
 
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde_json::{json, Map, Value};
@@ -11,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use crate::modules::account::{account_display_name, get_str, variant_of};
+use crate::modules::account::{account_display_name, find_account, get_str, variant_of};
 use crate::modules::config::{atomic_write, official_usage_cache_file, store_dir};
 use crate::modules::credits::authenticated_post;
 use crate::modules::variant::WbVariant;
@@ -33,6 +36,8 @@ fn official_usage_url_for(account: &Value) -> &'static str {
 }
 pub const OFFICIAL_USAGE_PAGE_SIZE: usize = 3_000;
 pub const OFFICIAL_USAGE_DETAIL_LIMIT: usize = 100;
+/// 请求内容预览的字符上限（明细表只需要能辨认请求，完整 prompt 不落缓存）。
+pub const INPUT_PREVIEW_LIMIT: usize = 120;
 const OFFICIAL_USAGE_MAX_PAGES: usize = 100;
 static OFFICIAL_USAGE_MEMORY: Mutex<Option<Value>> = Mutex::new(None);
 
@@ -102,6 +107,7 @@ fn sanitize_requests(value: Option<&Value>) -> Value {
                         "model",
                         "client",
                         "requestTime",
+                        "input",
                     ],
                 ))
             })
@@ -223,6 +229,43 @@ pub async fn official_usage_for_statistics(accounts: &[Value], at_ms: i64, refre
     usage
 }
 
+/// 单账号版官方请求用量投影：与 `collect_official_usage` 同 shape，但只含该账号、
+/// `requests` 最多 `limit` 条最近请求。**不写全量缓存**，供账号卡片点击弹窗按需加载，
+/// 与积分统计页「请求用量」表完全一致（统计页每账号上限即 `OFFICIAL_USAGE_DETAIL_LIMIT`）。
+pub async fn official_usage_for_account(account: &Value, limit: usize) -> Value {
+    let at_ms = Local::now().timestamp_millis();
+    let mut usage = collect_official_usage(&[account.clone()], at_ms).await;
+    let limit = limit.max(1);
+    if let Some(object) = usage.as_object_mut() {
+        object.insert("detailLimitPerAccount".into(), json!(limit));
+        if let Some(requests) = object.get_mut("requests").and_then(Value::as_array_mut) {
+            requests.truncate(limit);
+        }
+    }
+    usage
+}
+
+/// 按账号 id/uid 查单账号最近 `limit` 条积分消耗明细；账号不存在返回 `unavailable` 投影。
+pub async fn official_usage_for_account_id(account_id: &str, limit: usize) -> Value {
+    match find_account(account_id) {
+        Some(account) => official_usage_for_account(&account, limit).await,
+        None => json!({
+            "status": "unavailable",
+            "error": "账号不存在",
+            "rangeStart": Value::Null,
+            "rangeEnd": Value::Null,
+            "collectedAt": Value::Null,
+            "summary": { "usageToday": 0.0, "usage7Days": 0.0, "usageThisMonth": 0.0 },
+            "daily": [],
+            "accounts": [],
+            "requests": [],
+            "models": [],
+            "detailLimitPerAccount": limit,
+            "errors": [{ "accountId": account_id, "error": "账号不存在" }],
+        }),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RequestRow {
     request_id: String,
@@ -232,6 +275,8 @@ struct RequestRow {
     request_time: String,
     request_ts: i64,
     date: NaiveDate,
+    /// 请求内容预览（已压平换行并截断）；官方没有该字段时为 `None`。
+    input: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -353,6 +398,25 @@ fn compact_string(value: Option<&Value>, fallback: &str) -> String {
     text.chars().take(160).collect()
 }
 
+/// 请求内容预览。
+///
+/// 优先官方自带的截断版 `inputTrunc`，回退 `input`：明细表只需要能认出请求，
+/// 没有截断版时自己截到 `INPUT_PREVIEW_LIMIT`。换行与连续空白压成单空格，
+/// 免得一段 prompt 把表格撑成多行。
+fn preview_input(value: &Value) -> Option<String> {
+    let text = non_empty(value.get("inputTrunc")).or_else(|| non_empty(value.get("input")))?;
+    let flattened: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = flattened.chars().collect();
+    if chars.len() <= INPUT_PREVIEW_LIMIT {
+        return Some(flattened);
+    }
+    let head: String = chars.into_iter().take(INPUT_PREVIEW_LIMIT).collect();
+    Some(format!("{head}…"))
+}
+
 fn normalize_row(value: &Value) -> Option<RequestRow> {
     let credit = parse_number(value.get("credit"))?;
     if !credit.is_finite() || credit < 0.0 {
@@ -374,6 +438,7 @@ fn normalize_row(value: &Value) -> Option<RequestRow> {
         request_time,
         request_ts,
         date,
+        input: preview_input(value),
     })
 }
 
@@ -582,6 +647,7 @@ fn request_value(account_id: &str, account_name: &str, row: &RequestRow) -> Valu
         "model": row.model,
         "client": row.client,
         "requestTime": row.request_time,
+        "input": row.input.clone().unwrap_or_default(),
     })
 }
 
@@ -761,11 +827,13 @@ mod tests {
             request_time: format!("{date} 12:00:00"),
             request_ts: ts,
             date,
+            input: None,
         }
     }
 
+    /// 明细只带请求预览：优先官方截断版，未登记字段一律不进投影。
     #[test]
-    fn parses_success_page_and_does_not_copy_prompt_fields() {
+    fn parses_success_page_and_keeps_only_input_preview() {
         let page = parse_page(&json!({
             "code": 0,
             "data": {
@@ -776,8 +844,9 @@ mod tests {
                     "model": "model-a",
                     "client": "cli",
                     "requestTime": "2026-08-24 12:34:56",
-                    "input": "do not expose this prompt",
-                    "inputTrunc": "also secret"
+                    "input": "字".repeat(INPUT_PREVIEW_LIMIT + 50),
+                    "inputTrunc": "官方截断版",
+                    "prompt": "未登记字段"
                 }]
             }
         }))
@@ -787,10 +856,34 @@ mod tests {
         assert_eq!(page.raw_len, 1);
         assert_eq!(page.rows[0].credit, 1.25);
         let output = request_value("account-1", "one@example.com", &page.rows[0]);
-        let text = output.to_string();
-        assert!(!text.contains("do not expose"));
-        assert!(!text.contains("inputTrunc"));
+        // 官方自带截断版时直接用它，不再做本地二次截断
+        assert_eq!(output["input"], "官方截断版");
         assert_eq!(output["requestId"], "req-1");
+        assert!(output.get("prompt").is_none());
+        assert!(!output.to_string().contains("未登记字段"));
+    }
+
+    /// 只有 `input` 时自己截断到预览上限；换行与连续空白压成单空格，缺省为 `None`。
+    #[test]
+    fn input_preview_truncates_flattens_and_can_be_absent() {
+        assert_eq!(preview_input(&json!({})), None);
+        assert_eq!(preview_input(&json!({"input": "   "})), None);
+        assert_eq!(
+            preview_input(&json!({"input": "帮我看下这个函数"})).as_deref(),
+            Some("帮我看下这个函数"),
+            "短文本不截断"
+        );
+
+        let long = format!("{}\n\t第二段   内容", "字".repeat(INPUT_PREVIEW_LIMIT + 20));
+        let preview = preview_input(&json!({ "input": long })).expect("preview exists");
+        assert_eq!(
+            preview.chars().count(),
+            INPUT_PREVIEW_LIMIT + 1,
+            "截断到上限后再补一个省略号"
+        );
+        assert!(preview.ends_with('…'));
+        assert!(!preview.contains('\n'));
+        assert!(!preview.contains("第二段"), "尾部超长内容被截掉");
     }
 
     #[test]
@@ -899,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_round_trip_keeps_projection_and_strips_prompt_fields() {
+    fn cache_round_trip_keeps_projection_and_drops_unlisted_fields() {
         let payload = json!({
             "status": "complete",
             "rangeStart": "2026-07-26",
@@ -931,7 +1024,9 @@ mod tests {
                 "model": "model-a",
                 "client": "cli",
                 "requestTime": "2026-08-25 12:00:00",
-                "input": "do not persist this prompt"
+                "input": "帮我看下这个函数",
+                "inputTrunc": "官方截断版不入缓存",
+                "prompt": "do not persist this prompt"
             }],
             "detailLimitPerAccount": 100,
             "errors": [],
@@ -948,6 +1043,9 @@ mod tests {
         assert_eq!(loaded["status"], "complete");
         assert_eq!(loaded["summary"]["usageToday"], 1.5);
         assert_eq!(loaded["requests"][0]["requestId"], "req-1");
+        // 请求预览要留下来（明细表要用），官方截断版与未登记字段不留
+        assert_eq!(loaded["requests"][0]["input"], "帮我看下这个函数");
+        assert!(loaded["requests"][0].get("inputTrunc").is_none());
         assert!(loaded.get("secret").is_none());
         let text = loaded.to_string();
         assert!(!text.contains("do not persist"));
