@@ -31,10 +31,20 @@ pub const TRAVEL_API_PREFIX: &str = "/activity/growth/buddy/travel";
 
 static CHECKIN_LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 static TRAVEL_CACHE_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static CHECKIN_STATUS_CACHE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Serialize travel-cache read-modify-write across depart and claim cycles.
 pub fn with_travel_cache_lock<T>(f: impl FnOnce() -> T) -> T {
     let _guard = TRAVEL_CACHE_WRITE_LOCK.lock().unwrap();
+    f()
+}
+
+/// 串行化签到状态缓存的读-改-写。
+///
+/// server 端会并发查询多个账号的签到状态，缓存文件是「读全量 → 改 → 写全量」，
+/// 不加锁会互相覆盖（后果只是丢一条缓存，但仍应保证文件本身不损坏）。
+pub fn with_checkin_status_cache_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = CHECKIN_STATUS_CACHE_WRITE_LOCK.lock().unwrap();
     f()
 }
 
@@ -77,6 +87,11 @@ pub fn travel_config_file() -> PathBuf {
 
 pub fn travel_cache_file() -> PathBuf {
     store_dir().join("travel_cache.json")
+}
+
+/// 签到状态缓存（`get_checkin_status` 的短 TTL 缓存，跨天整体作废）。
+pub fn checkin_status_cache_file() -> PathBuf {
+    store_dir().join("checkin_status_cache.json")
 }
 
 pub fn credit_usage_snapshots_file() -> PathBuf {

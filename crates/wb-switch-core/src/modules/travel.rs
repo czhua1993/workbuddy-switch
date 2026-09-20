@@ -7,7 +7,7 @@
 use chrono::Local;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use crate::modules::account::{
@@ -22,6 +22,31 @@ use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
 static TRAVEL_RUNNING: AtomicBool = AtomicBool::new(false);
 static TRAVEL_CLAIM_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 最近一次 `reconcile_due_travel` 放行的时刻（秒）。
+static LAST_RECONCILE_AT: AtomicI64 = AtomicI64::new(0);
+
+/// reconcile 的最小间隔。
+///
+/// `GET /api/travel/status` 每轮都会调 `reconcile_due_travel`，而前端旅行轮询是
+/// 60s，不加节流就变成「前端轮询周期 = 上游请求周期」。真正的到期领取由后台
+/// `run_travel_claim_cycle`（`TRAVEL_CLAIM_INTERVAL` = 15 分钟）驱动，
+/// 30s 内跳过不影响及时性。
+pub const TRAVEL_RECONCILE_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// 本轮 reconcile 是否应被节流跳过。
+///
+/// 纯读取：把「当前时刻」显式传入，便于单测覆盖各边界。
+fn reconcile_is_throttled(now: i64) -> bool {
+    let last = LAST_RECONCILE_AT.load(Ordering::SeqCst);
+    // 用区间判定：时钟回拨（now < last）得到负值，同样视为「不在窗口内」而放行。
+    last > 0
+        && (0..TRAVEL_RECONCILE_MIN_INTERVAL.as_secs() as i64).contains(&now.saturating_sub(last))
+}
+
+/// 记录本轮放行时刻。
+fn mark_reconcile_ran(now: i64) {
+    LAST_RECONCILE_AT.store(now, Ordering::SeqCst);
+}
 
 /// 档位不支持成长中心时的统一短路结果（design D7：国际版无派猫猫旅行）。
 ///
@@ -974,11 +999,16 @@ fn display_label(same_day: bool, result: &Value) -> &'static str {
 /// 到点仍卡在 traveling 的缓存，按官方 status 再对一次。
 /// 官网 idle + daily_limit_reached 会落成已结束，避免卡片一直显示「即将到达」。
 pub async fn reconcile_due_travel(account_id: Option<&str>) {
+    let now = now_secs();
+    // 节流放在最外层：GET 每轮都会走到这里，跳过时连缓存都不必读。
+    if reconcile_is_throttled(now) {
+        return;
+    }
+    mark_reconcile_ran(now);
     let cache = load_travel_cache();
     let Some(results) = cache_results(&cache) else {
         return;
     };
-    let now = now_secs();
     let due: Vec<String> = results
         .iter()
         .filter(|(id, entry)| {
@@ -1299,5 +1329,19 @@ mod tests {
             ),
             "traveling"
         );
+    }
+
+    /// reconcile 节流：窗口内跳过，过窗放行；首次（未记录时刻）永不跳过。
+    #[test]
+    fn reconcile_throttle_windows() {
+        let interval = TRAVEL_RECONCILE_MIN_INTERVAL.as_secs() as i64;
+        let now = now_secs();
+        mark_reconcile_ran(now);
+        assert!(reconcile_is_throttled(now));
+        assert!(reconcile_is_throttled(now + interval - 1));
+        assert!(!reconcile_is_throttled(now + interval));
+
+        // 时钟回拨不得把节流永久卡死。
+        assert!(!reconcile_is_throttled(now.saturating_sub(interval * 2)));
     }
 }

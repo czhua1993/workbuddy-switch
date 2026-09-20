@@ -9,8 +9,9 @@
 //! 下游的 inactive / statusUnsupported 判定保留为防御，不依赖它们拦截国际版。
 
 use chrono::Local;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -19,8 +20,9 @@ use crate::modules::account::{
     account_display_name, build_auth_headers, load_accounts, variant_of,
 };
 use crate::modules::config::{
-    add_checkin_log, http_request, is_route_missing, load_checkin_config, load_checkin_logs,
-    now_ms, RunFlagGuard, CHECKIN_API_PREFIX,
+    add_checkin_log, atomic_write, checkin_status_cache_file, http_request, is_route_missing,
+    load_checkin_config, load_checkin_logs, now_ms, with_checkin_status_cache_lock, RunFlagGuard,
+    CHECKIN_API_PREFIX,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 use crate::modules::variant::WbVariant;
@@ -169,35 +171,165 @@ fn status_from_response(resp: &Value) -> Option<Value> {
     }))
 }
 
-/// 查询签到状态：新接口 checkin-activity-status，失败回退 checkin-status。
+// ---------------------------------------------------------------------------
+// 签到状态缓存
+// ---------------------------------------------------------------------------
+
+/// 签到状态缓存 TTL。
+///
+/// 一个账号一次查询最多 4 次上游请求（两个路径候选 × 401 刷新重试），而账号页
+/// 与旅行轮询会反复触发、桌面端与 webui 又是两个进程各查一遍。60s 内复用上次
+/// 结果，把「每次轮询全量真打」压成「每 60s 打一次」。
+///
+/// 缓存落盘而非只放内存：跨进程同样生效，且 `checkin_account` 签到成功后会
+/// 主动作废对应条目，不会把「已签到」盖住。
+pub const CHECKIN_STATUS_TTL: Duration = Duration::from_secs(60);
+
+/// 缓存键：账号 id；缺失时退回展示名（与 `AccountRunGuard` 口径一致）。
+fn checkin_status_cache_key(account: &Value) -> String {
+    account
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| account_display_name(account))
+}
+
+/// 读缓存文件（可注入路径：单测不得触碰真实 `~/.wb-switch`）。
+fn load_checkin_status_cache_from(path: &Path) -> Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn save_checkin_status_cache_to(path: &Path, cache: &Value) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(cache).unwrap_or_default();
+    atomic_write(path, &content)
+}
+
+/// 取未过期的缓存状态；跨天、超 TTL、时钟回拨都判为未命中。
+fn cached_checkin_status(cache: &Value, key: &str, today: &str, now: i64) -> Option<Value> {
+    if cache.get("date").and_then(Value::as_str) != Some(today) {
+        return None;
+    }
+    let entry = cache.get("results").and_then(Value::as_object)?.get(key)?;
+    let age = now.checked_sub(entry.get("at").and_then(Value::as_i64)?)?;
+    if !(0..CHECKIN_STATUS_TTL.as_millis() as i64).contains(&age) {
+        return None;
+    }
+    entry.get("status").cloned()
+}
+
+/// 写入一条缓存；跨天时整份结果作废（昨天的「已签到」不代表今天）。
+fn checkin_status_cache_with(
+    cache: &Value,
+    key: &str,
+    today: &str,
+    now: i64,
+    status: &Value,
+) -> Value {
+    let mut results = cache
+        .get("results")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if cache.get("date").and_then(Value::as_str) != Some(today) {
+        results = Map::new();
+    }
+    results.insert(key.to_string(), json!({ "at": now, "status": status }));
+    json!({ "date": today, "results": Value::Object(results) })
+}
+
+/// 删除某账号的缓存条目。
+fn checkin_status_cache_without(cache: &Value, key: &str, today: &str) -> Value {
+    let mut results = cache
+        .get("results")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    results.remove(key);
+    json!({ "date": today, "results": Value::Object(results) })
+}
+
+/// 作废某账号的签到状态缓存（可注入路径版本）。
+pub fn invalidate_checkin_status_cache_at(path: &Path, account: &Value) {
+    let key = checkin_status_cache_key(account);
+    let today = date_str(None);
+    with_checkin_status_cache_lock(|| {
+        let cache = load_checkin_status_cache_from(path);
+        let next = checkin_status_cache_without(&cache, &key, &today);
+        let _ = save_checkin_status_cache_to(path, &next);
+    });
+}
+
+/// 签到状态已变 → 作废缓存，下一次查询必须看到最新结果。
+///
+/// 不做这一步，60s TTL 内「已签到」会被旧值盖住，UI 要等缓存过期才更新。
+pub fn invalidate_checkin_status_cache(account: &Value) {
+    invalidate_checkin_status_cache_at(&checkin_status_cache_file(), account);
+}
+
+/// 查询签到状态：命中缓存直接返回，否则走 `fetch_checkin_status` 并回写缓存。
 ///
 /// `checkin-activity-status` / `checkin-status` 是**国内版专有**接口；国际版没有
 /// 对应实现（也没有签到本身）。因此国际版不发起任何请求，直接返回
 /// `statusUnsupported: true`；签到链路的其它入口在 `checkin_account` 处统一跳过。
 pub async fn get_checkin_status(account: &Value) -> Value {
-    if variant_of(account) == WbVariant::Cn {
-        let resp = checkin_request("/checkin-activity-status", account).await;
-        if let Some(status) = status_from_response(&resp) {
-            return status;
-        }
-        let resp2 = checkin_request("/checkin-status", account).await;
-        if let Some(status) = status_from_response(&resp2) {
-            return status;
-        }
-        let code2 = resp2.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+    if variant_of(account) != WbVariant::Cn {
         return json!({
             "ok": false,
-            "error": resp2.get("message")
-                .or_else(|| resp2.get("msg"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(&format!("code={code2}"))
-                .to_string(),
+            "statusUnsupported": true,
+            "error": "该档位暂无签到状态接口",
         });
     }
+
+    let key = checkin_status_cache_key(account);
+    let today = date_str(None);
+    let cached = with_checkin_status_cache_lock(|| {
+        let cache = load_checkin_status_cache_from(&checkin_status_cache_file());
+        cached_checkin_status(&cache, &key, &today, now_ms())
+    });
+    if let Some(status) = cached {
+        return status;
+    }
+
+    let status = fetch_checkin_status(account).await;
+    // 只缓存成功结果：鉴权/网络失败要让用户能立刻重试，不该被 TTL 压住。
+    if status.get("ok").and_then(Value::as_bool) == Some(true) {
+        with_checkin_status_cache_lock(|| {
+            let cache = load_checkin_status_cache_from(&checkin_status_cache_file());
+            let next = checkin_status_cache_with(&cache, &key, &today, now_ms(), &status);
+            let _ = save_checkin_status_cache_to(&checkin_status_cache_file(), &next);
+        });
+    }
+    status
+}
+
+/// 真正发请求查状态：新接口 checkin-activity-status，失败回退 checkin-status。
+///
+/// 仅国内版会走到这里（调用方已按档位短路）。
+async fn fetch_checkin_status(account: &Value) -> Value {
+    let resp = checkin_request("/checkin-activity-status", account).await;
+    if let Some(status) = status_from_response(&resp) {
+        return status;
+    }
+    let resp2 = checkin_request("/checkin-status", account).await;
+    if let Some(status) = status_from_response(&resp2) {
+        return status;
+    }
+    let code2 = resp2.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     json!({
         "ok": false,
-        "statusUnsupported": true,
-        "error": "该档位暂无签到状态接口",
+        "error": resp2.get("message")
+            .or_else(|| resp2.get("msg"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&format!("code={code2}"))
+            .to_string(),
     })
 }
 
@@ -307,6 +439,11 @@ pub async fn checkin_account(account: &Value) -> Value {
             "inactive": true,
             "message": res.get("message").cloned().unwrap_or(Value::Null),
         });
+    }
+    // 签到成功（含幂等的「已签到」）后状态已变：作废缓存，避免 60s TTL 内
+    // 查询仍回灌「未签到」。
+    if res.get("ok").and_then(Value::as_bool) == Some(true) {
+        invalidate_checkin_status_cache(&acc);
     }
     let result = if res.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         if res.get("already").and_then(|v| v.as_bool()) == Some(true) {
@@ -774,5 +911,96 @@ mod tests {
         assert_eq!(rows[2]["variant"], "cn");
         assert_eq!(rows[3]["variant"], "cn");
         assert_eq!(rows[4]["variant"], "cn");
+    }
+
+    /// 缓存命中边界：TTL 内复用，到点/跨天/换账号都判为未命中。
+    #[test]
+    fn checkin_status_cache_hits_until_ttl_or_new_day() {
+        let today = "2026-09-18";
+        let status = json!({"ok": true, "todayCheckedIn": false});
+        let cache = checkin_status_cache_with(&json!({}), "acc-1", today, 1_000_000, &status);
+        assert_eq!(cache["date"], today);
+
+        let at = 1_000_000 + 59_000;
+        assert_eq!(
+            cached_checkin_status(&cache, "acc-1", today, at),
+            Some(status.clone())
+        );
+        // 到 TTL（60s）不再命中。
+        assert_eq!(
+            cached_checkin_status(&cache, "acc-1", today, 1_060_000),
+            None
+        );
+        // 跨天整份作废。
+        assert_eq!(
+            cached_checkin_status(&cache, "acc-1", "2026-09-19", 1_000_001),
+            None
+        );
+        // 其它账号互不影响。
+        assert_eq!(
+            cached_checkin_status(&cache, "acc-2", today, 1_000_001),
+            None
+        );
+    }
+
+    /// 跨天写入：昨天的条目必须丢掉，不能留着给今天用。
+    #[test]
+    fn checkin_status_cache_resets_on_new_day() {
+        let cache = checkin_status_cache_with(
+            &json!({}),
+            "acc-1",
+            "2026-09-18",
+            1,
+            &json!({"ok": true, "todayCheckedIn": true}),
+        );
+        let next =
+            checkin_status_cache_with(&cache, "acc-2", "2026-09-19", 2, &json!({"ok": true}));
+        assert_eq!(next["date"], "2026-09-19");
+        assert!(next["results"].get("acc-1").is_none());
+        assert!(next["results"].get("acc-2").is_some());
+    }
+
+    /// 落盘往返 + 签到成功后失效 + 损坏文件按空缓存处理。
+    #[test]
+    fn checkin_status_cache_roundtrip_invalidation_and_broken_file() {
+        let dir = std::env::temp_dir().join(format!("wb-switch-checkin-cache-{}", now_ms()));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let path = dir.join("checkin_status_cache.json");
+        let account = json!({"id": "acc-1"});
+        let today = date_str(None);
+
+        let cache = checkin_status_cache_with(
+            &json!({}),
+            "acc-1",
+            &today,
+            now_ms(),
+            &json!({"ok": true, "todayCheckedIn": true}),
+        );
+        save_checkin_status_cache_to(&path, &cache).expect("写缓存");
+        assert!(cached_checkin_status(
+            &load_checkin_status_cache_from(&path),
+            "acc-1",
+            &today,
+            now_ms()
+        )
+        .is_some());
+
+        // 签到成功 → 作废，下一次查询必须重新打上游。
+        invalidate_checkin_status_cache_at(&path, &account);
+        assert_eq!(
+            cached_checkin_status(
+                &load_checkin_status_cache_from(&path),
+                "acc-1",
+                &today,
+                now_ms()
+            ),
+            None
+        );
+
+        // 损坏文件不得让查询链路报错。
+        std::fs::write(&path, "{not json").expect("写坏文件");
+        assert_eq!(load_checkin_status_cache_from(&path), json!({}));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

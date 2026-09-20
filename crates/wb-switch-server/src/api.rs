@@ -592,13 +592,41 @@ async fn api_copy_sessions(Json(body): Json<Value>) -> Response {
 // 签到 / 保活
 // ---------------------------------------------------------------------------
 
+/// 签到状态查询的并发上限。
+///
+/// 账号数通常不超过 10，串行时每个账号最多 4 次上游请求（两个路径候选 ×
+/// 401 刷新重试），延迟会累加到秒级。4 路并发足以压下来，又不会给上游和本地
+/// token 刷新（写 `accounts.json`）造成并发压力。
+const CHECKIN_STATUS_CONCURRENCY: usize = 4;
+
 /// GET /api/checkin/status —— 全部账号的签到状态（每行带 `variant`，档位取账号自身）。
 async fn api_checkin_status() -> Response {
     let list = account::load_accounts();
-    let mut items = Vec::new();
-    for acc in &list {
-        let status = checkin::get_checkin_status(acc).await;
-        items.push(checkin_status_item(acc, status));
+    // 先按「查询未完成」铺底：任务恐慌/被取消时该账号仍有行，不会从列表里消失。
+    let mut items: Vec<Value> = list
+        .iter()
+        .map(|acc| checkin_status_item(acc, json!({"ok": false, "error": "签到状态查询未完成"})))
+        .collect();
+    let mut running = tokio::task::JoinSet::new();
+    let mut next = 0usize;
+    // 先填满并发窗口，之后每完成一个补一个，保持恒定并发。
+    while next < list.len() && running.len() < CHECKIN_STATUS_CONCURRENCY {
+        let index = next;
+        next += 1;
+        let acc = list[index].clone();
+        running.spawn(async move { (index, checkin::get_checkin_status(&acc).await) });
+    }
+    while let Some(joined) = running.join_next().await {
+        // 恐慌/取消的任务保留铺底行；正常结果按原索引回填，顺序与账号列表一致。
+        if let Ok((index, status)) = joined {
+            items[index] = checkin_status_item(&list[index], status);
+        }
+        if next < list.len() {
+            let index = next;
+            next += 1;
+            let acc = list[index].clone();
+            running.spawn(async move { (index, checkin::get_checkin_status(&acc).await) });
+        }
     }
     json_ok(json!({ "accounts": items }))
 }
