@@ -17,8 +17,8 @@ use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, config,
-    credit_usage, credits, export_import, limits, official_usage, oauth, process,
+    account, account_profile, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide,
+    config, credit_usage, credits, export_import, limits, official_usage, oauth, process,
     rate_limit_events, rate_limit_hook, refresh, rotate, session, switch, token_stats, travel,
     update, variant::WbVariant, vscode_ext, vscode_session,
 };
@@ -141,6 +141,7 @@ pub fn router() -> Router {
         .route("/api/rotate/run", post(api_rotate_run))
         .route("/api/rotate/logs", get(api_rotate_logs))
         .route("/api/refresh-token", post(api_refresh_token))
+        .route("/api/account/info", post(api_account_info))
         .route("/api/update/check", get(api_update_check))
         .route(
             "/api/update/config",
@@ -847,6 +848,19 @@ async fn api_refresh_token(Json(body): Json<Value>) -> Response {
         return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
     };
     json_ok(refresh::refresh_account_token(acc).await)
+}
+
+async fn api_account_info(Json(body): Json<Value>) -> Response {
+    let ids = body
+        .get("accountIds")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json_ok(account_profile::refresh_account_info(&ids).await)
 }
 
 // ---------------------------------------------------------------------------

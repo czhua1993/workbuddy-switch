@@ -679,6 +679,14 @@ pub async fn refresh_account_token(account_id: String) -> Result<Value, String> 
     Ok(account::account_meta(&fresh))
 }
 
+/// POST /api/account/info —— 批量刷新账号资料（昵称 / uin / type 等）。
+///
+/// 签到 / 刷新全部积分的附带动作：尽力而为，失败静默跳过，不影响主流程。
+#[tauri::command]
+pub async fn refresh_account_info(account_ids: Vec<String>) -> Value {
+    wb_switch_core::modules::account_profile::refresh_account_info(&account_ids).await
+}
+
 // ---------------------------------------------------------------------------
 // 阶段 4：自动更新
 // ---------------------------------------------------------------------------

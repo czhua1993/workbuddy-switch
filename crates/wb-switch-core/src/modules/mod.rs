@@ -1,4 +1,5 @@
 pub mod account;
+pub mod account_profile;
 pub mod auth_file;
 pub mod checkin;
 pub mod codebuddy_cli;

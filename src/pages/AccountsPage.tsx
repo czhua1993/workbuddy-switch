@@ -425,7 +425,11 @@ export default function AccountsPage() {
       void ensureCheckin([a.id]);
       void fetchAll({ force: true });
       // 签到成功/已签到会带来积分变动，force 刷新该账号积分
-      if (res.result !== "error") void refreshCredits([a.id]);
+      if (res.result !== "error") {
+        void refreshCredits([a.id]);
+        // 附带刷新账号资料（昵称可能变更），随后重拉列表反映最新值
+        void api.refreshAccountInfo([a.id]).then(() => void fetchAll({ force: true }));
+      }
     } catch (e) {
       toast.error("签到失败", { description: api.asError(e) });
     }
@@ -495,7 +499,14 @@ export default function AccountsPage() {
         }
       }
       await refreshCredits(ids);
+      // 附带刷新账号资料（昵称 / uin / type 等），并强制重拉列表反映最新值。
+      try {
+        await api.refreshAccountInfo(ids);
+      } catch {
+        /* 资料刷新失败不影响积分结果 */
+      }
       if (travelAvailable) await ensureTravel(ids, { force: true });
+      void fetchAll({ force: true });
       toast.success("积分到期情况已刷新");
     } finally {
       setCheckinAllRunning(false);

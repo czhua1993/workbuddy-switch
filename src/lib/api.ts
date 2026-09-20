@@ -702,6 +702,16 @@ export function refreshAccountToken(accountId: string): Promise<AccountMeta> {
   return call("refresh_account_token", { accountId });
 }
 
+/**
+ * 批量刷新账号资料（昵称 / uin / type 等），从官方 /console/accounts 拉取并写回。
+ * 签到 / 刷新全部积分时附带调用；尽力而为，失败静默跳过。
+ */
+export function refreshAccountInfo(
+  accountIds: string[],
+): Promise<{ results: { accountId: string; status: string; changed?: boolean; accountName?: string }[]; updated: number }> {
+  return call("refresh_account_info", { accountIds });
+}
+
 // ---------------------------------------------------------------------------
 // 阶段 4：自动更新
 // ---------------------------------------------------------------------------

@@ -222,6 +222,7 @@ pub fn run() {
             commands::get_auto_travel_config,
             commands::save_auto_travel_config,
             commands::refresh_account_token,
+            commands::refresh_account_info,
             commands::get_auto_rotate_config,
             commands::save_auto_rotate_config,
             commands::rotate_status,
