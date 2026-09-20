@@ -917,3 +917,31 @@ pub async fn cleanup_sessions(
     .await
     .map_err(|e| format!("清理任务执行失败: {e}"))?
 }
+
+/// 清理重复会话（VS Code 扩展磁盘目录）：按「标题 + 工作区」分组，每组保留最新一条，
+/// 其余物理删除并备份。`dry_run` 只出报告不删任何东西。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn dedup_vscode_sessions(
+    account_id: String,
+    dry_run: Option<bool>,
+) -> Result<Value, String> {
+    if account_id.trim().is_empty() {
+        return Err("缺少 accountId".to_string());
+    }
+    let dry_run = dry_run.unwrap_or(false);
+    let uid = account::load_accounts()
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(account_id.as_str()))
+        .and_then(|a| {
+            a.get("uid")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "未找到该账号或账号缺少 uid".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        vscode_session::dedup_vscode_sessions(&uid, dry_run)
+    })
+    .await
+    .map_err(|e| format!("清理重复会话失败: {e}"))?
+}

@@ -820,3 +820,11 @@ export function cleanupSessions(args: {
 }): Promise<CleanupReport> {
   return call("cleanup_sessions", args as unknown as Record<string, unknown>);
 }
+
+/** 清理重复会话：按「标题 + 工作区」分组，每组保留最新一条，其余删除；dryRun 只出报告。 */
+export function dedupVscodeSessions(args: {
+  accountId: string;
+  dryRun?: boolean;
+}): Promise<CleanupReport> {
+  return call("dedup_vscode_sessions", args as unknown as Record<string, unknown>);
+}

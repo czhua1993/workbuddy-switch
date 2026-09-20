@@ -18,6 +18,7 @@ import {
 
 import { AccountCard } from "@/components/account-card";
 import { CleanupSessionsDialog } from "@/components/cleanup-sessions-dialog";
+import { DedupSessionsDialog } from "@/components/dedup-sessions-dialog";
 import { DemoAction } from "@/components/demo-action";
 import {
   CodeBuddyAiIdeMark,
@@ -156,6 +157,7 @@ export default function AccountsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [switchAccount, setSwitchAccount] = useState<AccountMeta | null>(null);
   const [cleanupAccount, setCleanupAccount] = useState<AccountMeta | null>(null);
+  const [dedupAccount, setDedupAccount] = useState<AccountMeta | null>(null);
   const [importing, setImporting] = useState(false);
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
@@ -959,6 +961,7 @@ export default function AccountsPage() {
                 onDelete={onDelete}
                 onSwitch={setSwitchAccount}
                 onCleanupSessions={setCleanupAccount}
+                onDedupSessions={setDedupAccount}
                 onCheckin={onCheckin}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
@@ -1033,6 +1036,16 @@ export default function AccountsPage() {
           if (!o) setCleanupAccount(null);
         }}
         account={cleanupAccount}
+        onCleaned={() => {
+          void fetchAll();
+        }}
+      />
+      <DedupSessionsDialog
+        open={dedupAccount !== null}
+        onOpenChange={(o) => {
+          if (!o) setDedupAccount(null);
+        }}
+        account={dedupAccount}
         onCleaned={() => {
           void fetchAll();
         }}

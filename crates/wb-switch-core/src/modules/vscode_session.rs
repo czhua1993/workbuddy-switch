@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 use crate::modules::account::{self, get_str};
 use crate::modules::config::{atomic_write, backup_dir, utc_iso};
+use crate::modules::copy_map;
 use crate::modules::vscode_ext;
 
 /// 扩展数据根目录名（`<平台本地数据根>\CodeBuddyExtension\Data`）。
@@ -391,6 +392,7 @@ pub fn copy_sessions_in(
     }
 
     let mut copied: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
 
     for item in items {
@@ -421,10 +423,34 @@ pub fn copy_sessions_in(
             }));
             continue;
         };
+        // 复制去重：若该源会话此前已复制给此目标且副本仍存活，跳过，避免来回切号越复制越多。
+        if let Some(existing_cid) = copy_map::find_copy(source_uid, conversation_id, target_uid) {
+            let existing_dir = target_history.join(workspace_hash).join(&existing_cid);
+            let alive = existing_dir.is_dir()
+                && read_json(&existing_dir.join("index.json"))
+                    .as_ref()
+                    .and_then(|idx| find_conversation(idx, &existing_cid))
+                    .is_some();
+            if alive {
+                skipped.push(json!({
+                    "workspaceHash": workspace_hash,
+                    "conversationId": conversation_id,
+                    "existingId": existing_cid,
+                    "reason": "已复制过，跳过",
+                }));
+                continue;
+            }
+            // 映射指向的副本已丢失：按正常复制处理，成功后刷新记录。
+        }
         let target_dir = target_history.join(workspace_hash);
         match copy_one_conversation(&source_dir, &target_dir, workspace_hash, conversation_id, state)
         {
-            Ok(outcome) => copied.push(outcome),
+            Ok(outcome) => {
+                if let Some(new_id) = outcome.get("newId").and_then(Value::as_str) {
+                    copy_map::record_copy(source_uid, conversation_id, target_uid, new_id);
+                }
+                copied.push(outcome);
+            }
             Err(error) => errors.push(json!({
                 "workspaceHash": workspace_hash,
                 "conversationId": conversation_id,
@@ -437,6 +463,7 @@ pub fn copy_sessions_in(
         "sourceUid": source_uid,
         "targetUid": target_uid,
         "copied": copied,
+        "skipped": skipped,
         "backup": backup_root.to_string_lossy(),
     });
     if !errors.is_empty() {
@@ -450,6 +477,290 @@ pub fn copy_sessions_in(
 /// 复制与注入都要求 VS Code 完全退出。复制按逐条隔离执行；复制步骤成功后
 /// 才复用 [`vscode_ext::switch_account`] 注入 token（保持既有签名不变）。
 /// 若注入失败但会话已复制，返回明确文案说明残留状态，不做隐式回滚。
+/// 清理重复会话：按「标题(name) + 工作区」分组，每组保留 `updated_at` 最新一条，其余物理删除
+/// （删会话目录 + 从工作区索引移除条目），删前完整备份以便回滚。`dry_run` 只出报告不删任何东西。
+/// 扫描会话 `messages/` 目录：返回 (消息条数, 轻量指纹集合)。
+///
+/// 指纹只用**消息文件大小**（不读取正文）：复制副本与源的消息正文除 id 外逐字一致、
+/// 且 id 等长替换，故文件大小相同 → 指纹集合相交，仍能正确识别复制产生的重复；
+/// 同时避免预览阶段读取全部消息正文带来的磁盘 IO 卡顿。极个别「不同会话消息大小集合
+/// 恰好相同」的情况可能误并，但已配合「同标题」进一步缩小范围，概率极低。
+fn scan_messages(ws_dir: &Path, cid: &str) -> (usize, BTreeSet<u64>) {
+    let mut count = 0usize;
+    let mut sizes = BTreeSet::new();
+    let msgs = ws_dir.join(cid).join("messages");
+    if let Ok(entries) = std::fs::read_dir(&msgs) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            count += 1;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                sizes.insert(meta.len());
+            }
+        }
+    }
+    (count, sizes)
+}
+
+/// 并查集：把 `a`、`b` 连通为同一分量（用于把「内容指纹有交集」的会话聚成重复组）。
+fn union_find_connect(parent: &mut [usize], a: usize, b: usize) {
+    let (mut ra, mut rb) = (a, b);
+    while parent[ra] != ra {
+        ra = parent[ra];
+    }
+    while parent[rb] != rb {
+        rb = parent[rb];
+    }
+    if ra != rb {
+        parent[ra] = rb;
+    }
+}
+
+/// 并查集查找根（带路径压缩）。
+fn uf_find(parent: &mut [usize], x: usize) -> usize {
+    let mut r = x;
+    while parent[r] != r {
+        r = parent[r];
+    }
+    let mut c = x;
+    while parent[c] != r {
+        let nxt = parent[c];
+        parent[c] = r;
+        c = nxt;
+    }
+    r
+}
+
+///
+/// 判重以「标题 + 轻量指纹」为准：先按标题（同工作区内）缩小候选，再比对各会话
+/// `messages/` 的**消息文件大小集合**（复制副本与源逐字一致、id 等长替换，故大小相同、指纹相交）。
+/// 仅当两条会话**共享至少一条消息（大小相同）**才视为同一会话的副本，避免「同名不同会话」被误删；
+/// 标题为空的会话不参与分组。每个重复组保留**消息数最多**者。写入前必须完全退出 VS Code。
+pub fn dedup_vscode_sessions(uid: &str, dry_run: bool) -> Result<Value, String> {
+    if !is_safe_uid(uid) {
+        return Err("账号 uid 非法，拒绝操作".to_string());
+    }
+    if vscode_ext::is_vscode_running() {
+        return Err(
+            "检测到 VS Code 正在运行，请先完全退出后再清理重复会话，否则改动会被覆盖。"
+                .to_string(),
+        );
+    }
+    let Some(root) = ext_data_root() else {
+        return Err("未找到 CodeBuddy 扩展数据目录".to_string());
+    };
+    let history = history_root(&root, uid);
+    if !history.is_dir() {
+        return Ok(json!({
+            "uid": uid,
+            "groups": [],
+            "duplicateCount": 0,
+            "planned": 0,
+            "removed": 0,
+            "kept": 0,
+            "dryRun": dry_run,
+        }));
+    }
+
+    let backup_root = backup_dir().join("vscode-sessions-dedup").join(utc_iso());
+    let mut groups: Vec<Value> = Vec::new();
+    let mut planned: usize = 0;
+    let mut removed: usize = 0;
+    let mut kept: usize = 0;
+    let mut errors: Vec<Value> = Vec::new();
+
+    let Ok(ws_entries) = std::fs::read_dir(&history) else {
+        return Err("无法读取历史目录".to_string());
+    };
+    for ws_entry in ws_entries.flatten() {
+        let ws_dir = ws_entry.path();
+        if !ws_dir.is_dir() {
+            continue;
+        }
+        let workspace_hash = ws_entry.file_name().to_string_lossy().to_string();
+        let Some(index) = read_json(&ws_dir.join("index.json")) else {
+            continue;
+        };
+        let Some(conversations) = index.get("conversations").and_then(Value::as_array) else {
+            continue;
+        };
+        // 收集候选会话：id 合法且标题非空（空标题不参与，避免误并不同无名会话）。
+        let mut cands: Vec<(String, String, i64)> = Vec::new();
+        for conv in conversations {
+            let Some(id) = conv
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && is_hex32(s))
+            else {
+                continue;
+            };
+            let name = conv
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let last = time_to_ms(conv.get("lastMessageAt"));
+            let updated_at = if last > 0 {
+                last
+            } else {
+                time_to_ms(conv.get("createdAt"))
+            };
+            cands.push((id.to_string(), name, updated_at));
+        }
+        // 同工作区内先按标题分组（缩小内容指纹比对范围）。
+        let mut by_name: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();
+        for (id, name, updated_at) in cands {
+            by_name.entry(name.clone()).or_default().push((id, updated_at));
+        }
+        for (name, members) in by_name {
+            if members.len() < 2 {
+                kept += members.len();
+                continue;
+            }
+            // 计算组内每条会话的消息数 + 内容指纹集合（去 messageId 后哈希，跨复制重映射仍一致）。
+            let mut infos: Vec<(String, i64, usize, BTreeSet<u64>)> = Vec::new();
+            for (id, updated_at) in members {
+                let (count, fps) = scan_messages(&ws_dir, &id);
+                infos.push((id, updated_at, count, fps));
+            }
+            // 按内容指纹交集做连通分量：共享至少一条消息内容才视为同一会话的副本。
+            let n = infos.len();
+            let mut parent: Vec<usize> = (0..n).collect();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    if !infos[i].3.is_disjoint(&infos[j].3) {
+                        union_find_connect(&mut parent, i, j);
+                    }
+                }
+            }
+            // 按连通分量聚组。
+            let mut comps: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for i in 0..n {
+                comps.entry(uf_find(&mut parent, i)).or_default().push(i);
+            }
+            for (_, idxs) in comps {
+                if idxs.len() < 2 {
+                    kept += 1;
+                    continue;
+                }
+                // 保留消息数最多者；并列取 updated_at 最大，再取 id 字典序最大（稳定）。
+                let mut order: Vec<usize> = idxs.clone();
+                order.sort_by(|&a, &b| {
+                    infos[b]
+                        .2
+                        .cmp(&infos[a].2)
+                        .then_with(|| infos[b].1.cmp(&infos[a].1))
+                        .then_with(|| infos[b].0.cmp(&infos[a].0))
+                });
+                let keep_i = order[0];
+                let keep_id = infos[keep_i].0.clone();
+                let duplicates: Vec<Value> = order[1..]
+                    .iter()
+                    .map(|&i| {
+                        json!({ "id": infos[i].0, "updatedAt": infos[i].1, "messageCount": infos[i].2 })
+                    })
+                    .collect();
+                planned += duplicates.len();
+                groups.push(json!({
+                    "workspaceHash": workspace_hash,
+                    "name": name,
+                    "keep": keep_id,
+                    "keepMessageCount": infos[keep_i].2,
+                    "duplicates": duplicates,
+                }));
+                if dry_run {
+                    kept += 1;
+                    continue;
+                }
+                for dup in &duplicates {
+                    let dup_id = dup.get("id").and_then(Value::as_str).unwrap_or("");
+                    match remove_one_duplicate(&ws_dir, &backup_root, &workspace_hash, dup_id) {
+                        Ok(_) => {
+                            removed += 1;
+                            copy_map::remove_copies_for_target(&[dup_id.to_string()]);
+                        }
+                        Err(e) => errors.push(json!({
+                            "workspaceHash": workspace_hash,
+                            "id": dup_id,
+                            "error": e,
+                        })),
+                    }
+                }
+                kept += 1;
+            }
+        }
+    }
+
+    let mut report = json!({
+        "uid": uid,
+        "groups": groups,
+        "duplicateCount": planned,
+        "planned": planned,
+        "removed": removed,
+        "kept": kept,
+        "dryRun": dry_run,
+        "backup": backup_root.to_string_lossy(),
+    });
+    if !errors.is_empty() {
+        report["errors"] = json!(errors);
+    }
+    Ok(report)
+}
+
+/// 删除单个重复会话（物理）：先备份会话目录与工作区索引到 `backup_root`，
+/// 再从工作区索引移除条目并删除会话目录。失败尽量回滚（保留索引备份）。
+fn remove_one_duplicate(
+    ws_dir: &Path,
+    backup_root: &Path,
+    workspace_hash: &str,
+    cid: &str,
+) -> Result<(), String> {
+    if cid.is_empty() || !is_hex32(cid) {
+        return Err("会话 id 非法".to_string());
+    }
+    let conv_dir = ws_dir.join(cid);
+    if !conv_dir.is_dir() {
+        return Err("会话目录不存在".to_string());
+    }
+    // 备份会话目录（完整副本，可手动回滚）。
+    let bak_conv = backup_root.join(workspace_hash).join(cid);
+    if let Some(parent) = bak_conv.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = copy_dir_recursive(&conv_dir, &bak_conv) {
+        return Err(format!("备份会话目录失败：{e}"));
+    }
+    // 备份并改写工作区索引。
+    let idx_path = ws_dir.join("index.json");
+    let index = read_json(&idx_path).ok_or_else(|| "工作区索引缺失".to_string())?;
+    let mut new_index = index.clone();
+    if let Some(arr) = new_index
+        .get_mut("conversations")
+        .and_then(Value::as_array_mut)
+    {
+        arr.retain(|c| c.get("id").and_then(Value::as_str) != Some(cid));
+    }
+    let bak_idx = backup_root.join(workspace_hash).join("index.json");
+    if let Some(parent) = bak_idx.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = atomic_write(&bak_idx, &index.to_string()) {
+        return Err(format!("备份工作区索引失败：{e}"));
+    }
+    if let Err(e) = atomic_write(&idx_path, &new_index.to_string()) {
+        return Err(format!("写入工作区索引失败：{e}"));
+    }
+    remove_dir_all_if_exists(&conv_dir);
+    Ok(())
+}
+
 pub fn switch_vscode_ext_with_copy(
     account_id: &str,
     restart: bool,
@@ -1385,5 +1696,69 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn scan_messages_same_body_diff_ids_overlaps() {
+        let dir = std::env::temp_dir().join(format!(
+            "wb_dedup_fp_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let ws = dir.join("ws");
+        // 源会话：message 含 messageId（复制后会变），但正文一致。
+        let src = ws.join("11111111111111111111111111111111");
+        std::fs::create_dir_all(src.join("messages")).unwrap();
+        std::fs::write(
+            src.join("messages/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"),
+            r#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","text":"hello world"}"#,
+        )
+        .unwrap();
+        // 副本：messageId 被重映射为不同值，正文相同。
+        let dup = ws.join("22222222222222222222222222222222");
+        std::fs::create_dir_all(dup.join("messages")).unwrap();
+        std::fs::write(
+            dup.join("messages/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"),
+            r#"{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","text":"hello world"}"#,
+        )
+        .unwrap();
+
+        let (c1, fps1) = scan_messages(&ws, "11111111111111111111111111111111");
+        let (c2, fps2) = scan_messages(&ws, "22222222222222222222222222222222");
+        assert_eq!(c1, 1);
+        assert_eq!(c2, 1);
+        assert!(
+            !fps1.is_disjoint(&fps2),
+            "同正文、不同 messageId 的副本应共享内容指纹"
+        );
+    }
+
+    #[test]
+    fn scan_messages_distinct_body_no_overlap() {
+        let dir = std::env::temp_dir().join(format!(
+            "wb_dedup_fp_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let ws = dir.join("ws");
+        let a = ws.join("11111111111111111111111111111111");
+        std::fs::create_dir_all(a.join("messages")).unwrap();
+        std::fs::write(
+            a.join("messages/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"),
+            r#"{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","text":"alpha"}"#,
+        )
+        .unwrap();
+        let b = ws.join("22222222222222222222222222222222");
+        std::fs::create_dir_all(b.join("messages")).unwrap();
+        std::fs::write(
+            b.join("messages/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"),
+            r#"{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","text":"beta"}"#,
+        )
+        .unwrap();
+
+        let (_, fps_a) = scan_messages(&ws, "11111111111111111111111111111111");
+        let (_, fps_b) = scan_messages(&ws, "22222222222222222222222222222222");
+        assert!(
+            fps_a.is_disjoint(&fps_b),
+            "不同正文的会话不应共享内容指纹（避免误判重复）"
+        );
     }
 }

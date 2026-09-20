@@ -198,6 +198,7 @@ pub fn run() {
             commands::import_accounts,
             commands::switch_account,
             commands::cleanup_sessions,
+            commands::dedup_vscode_sessions,
             commands::list_sessions,
             commands::copy_sessions,
             commands::session_links_preview,
