@@ -793,7 +793,7 @@ fn format_checkin_tooltip(value: &Value) -> String {
 mod tests {
     use super::{
         format_checkin_tooltip, is_silent_startup, should_activate_on_second_launch,
-        should_keep_tray_alive, should_wake_main_window, tray_icon, tray_icon_variant, MouseButton,
+        should_keep_tray_alive, should_wake_main_window, tray_icon_variant, MouseButton,
         MouseButtonState, TrayIconVariant,
     };
     use serde_json::json;
@@ -807,6 +807,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn tray_icon_has_transparency_and_antialiasing() {
+        use super::tray_icon;
         let icon = tray_icon();
         assert_eq!((icon.width(), icon.height()), (36, 36));
         assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
@@ -900,6 +901,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn taskbar_theme_is_readable_on_windows() {
+        use super::taskbar_uses_light_theme;
         assert!(
             taskbar_uses_light_theme().is_some(),
             "读不到 SystemUsesLightTheme：自适应不可用，应改为固定素材"

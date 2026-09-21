@@ -4,14 +4,15 @@
 //! `secret://{"extensionId":"<ext>","key":"<key>"}`。
 //!
 //! 各目标之间的差异点（数据目录 / secret key / macOS Keychain 服务名 /
-//! Linux `secret-tool` 应用名）全部收敛在 [`VscodeSafeStorageTarget`] 描述符，
+//! Linux 密钥环应用名）全部收敛在 [`VscodeSafeStorageTarget`] 描述符，
 //! CodeBuddy CN IDE（`codebuddy_cn_ide`）、CodeBuddy 国际版 IDE（`codebuddy_ide`）
 //! 与 VS Code CodeBuddy 扩展（`vscode_ext`）复用同一套加解密与读写流程。
 //!
 //! 平台加密模型对齐 Chromium/Electron Safe Storage：
 //! - macOS: Keychain「<app> Safe Storage」→ PBKDF2-SHA1(1003) → AES-128-CBC `v10`
 //! - Windows: Local State `os_crypt.encrypted_key` + DPAPI → AES-256-GCM `v10`
-//! - Linux: secret-tool / peanuts 固定密钥 → AES-128-CBC `v11`/`v10`
+//! - Linux: Secret Service（`org.freedesktop.secrets`）密钥 → AES-128-CBC `v11`，
+//!   无密钥环时退回 peanuts 固定密钥 `v10`
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +32,7 @@ use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 #[cfg(not(target_os = "windows"))]
 use pbkdf2::pbkdf2_hmac;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 #[cfg(not(target_os = "windows"))]
 use sha1::Sha1;
 
@@ -74,7 +75,8 @@ pub struct VscodeSafeStorageTarget {
     pub secret_key: &'static str,
     /// macOS Keychain 通用密码服务名。
     pub macos_keychain_service: &'static str,
-    /// Linux `secret-tool` 应用名候选（按顺序尝试）。
+    /// Linux 密钥环应用名候选（按顺序尝试）：Secret Service 按 `application`
+    /// 属性检索，`secret-tool` 兜底路径按同一属性查询。
     pub linux_secret_tool_app_names: &'static [&'static str],
 }
 
@@ -376,8 +378,14 @@ const LINUX_EMPTY_KEY: [u8; 16] = [
 ];
 
 #[cfg(target_os = "linux")]
-fn get_linux_v11_key(target: &VscodeSafeStorageTarget) -> Option<[u8; 16]> {
-    for app in target.linux_secret_tool_app_names {
+fn get_linux_v11_key(app_names: &[&str]) -> Option<[u8; 16]> {
+    // 优先原生 D-Bus（Secret Service）：`secret-tool` 属于 libsecret-tools，多数发行版
+    // 默认不安装，而 Electron 早把密码写进了 gnome-keyring，只差一个读得到的客户端。
+    if let Some(password) = crate::modules::linux_keyring::find_password(app_names) {
+        return Some(pbkdf2_sha1_key(&password, 1));
+    }
+    // 兜底：极少数只装了 libsecret-tools 的环境，按老路子再试一次。
+    for app in app_names {
         if let Some(password) =
             run_command_get_trimmed("secret-tool", &["lookup", "application", app], 10)
         {
@@ -385,6 +393,18 @@ fn get_linux_v11_key(target: &VscodeSafeStorageTarget) -> Option<[u8; 16]> {
         }
     }
     None
+}
+
+/// v11 密钥缺失时的提示：直接说清「谁去开、怎么开」，不要只说一句加载失败。
+///
+/// 文案刻意不出现 "Safe Storage" / "Keychain"：cn-ide 的注入失败提示会按这两个词
+/// 追加 macOS 钥匙串（Keychain）指引，那是平台错位的建议。
+#[cfg(target_os = "linux")]
+fn linux_v11_key_error(target: &VscodeSafeStorageTarget) -> String {
+    format!(
+        "无法从系统密钥环读取「{}」的登录凭证密钥（v11）。请确认 gnome-keyring / KWallet 已启动、登录密钥环已解锁，并先用 {} 手动登录一次。",
+        target.display_name, target.display_name
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -508,8 +528,8 @@ fn decrypt_secret_payload(
         let _ = data_root;
         match detect_prefix(encrypted) {
             Some("v11") => {
-                let key = get_linux_v11_key(target)
-                    .ok_or_else(|| "无法加载 Linux secret storage key（v11）".to_string())?;
+                let key = get_linux_v11_key(target.linux_secret_tool_app_names)
+                    .ok_or_else(|| linux_v11_key_error(target))?;
                 match decrypt_cbc_prefixed(encrypted, V11_PREFIX, &key) {
                     Ok(value) => Ok(value),
                     Err(_) => decrypt_cbc_prefixed(encrypted, V11_PREFIX, &LINUX_EMPTY_KEY),
@@ -556,14 +576,14 @@ fn encrypt_secret_payload(
         let _ = data_root;
         let target_prefix = if let Some(prefix) = preferred_prefix {
             prefix
-        } else if get_linux_v11_key(target).is_some() {
+        } else if get_linux_v11_key(target.linux_secret_tool_app_names).is_some() {
             "v11"
         } else {
             "v10"
         };
         if target_prefix == "v11" {
-            let key = get_linux_v11_key(target)
-                .ok_or_else(|| "无法加载 Linux secret storage key（v11）".to_string())?;
+            let key = get_linux_v11_key(target.linux_secret_tool_app_names)
+                .ok_or_else(|| linux_v11_key_error(target))?;
             return encrypt_cbc_prefixed(V11_PREFIX, &key, plaintext);
         }
         return encrypt_cbc_prefixed(V10_PREFIX, &LINUX_V10_KEY, plaintext);
@@ -634,6 +654,57 @@ pub fn read_secret_for(
         Some(value) => decode_secret_storage_value(&value, &data_root, target).map(Some),
         None => Ok(None),
     }
+}
+
+/// 目标 `state.vscdb` 中是否存在该 secret 行（只读查询、**不解密**）。
+///
+/// 供账号页轮询的状态接口使用：macOS 上解密会触发钥匙串授权弹窗，绝不能进轮询路径，
+/// 因此这里只判断 key 是否存在（不读值、不解密）。
+///
+/// 与 [`resolve_state_db_path_for`] 的关键差异：**不创建任何目录或文件**——
+/// 三个候选路径都不存在时直接返回 `Ok(false)`（`resolve_state_db_path_for` 会
+/// `create_dir_all`，不能用于只读探测）。
+pub fn has_secret_row_for(
+    target: &VscodeSafeStorageTarget,
+    user_data_dir: Option<&Path>,
+) -> Result<bool, String> {
+    let root = match user_data_dir {
+        Some(path) => path.to_path_buf(),
+        None => match (target.data_dir_resolver)() {
+            Some(dir) => dir,
+            None => return Ok(false),
+        },
+    };
+    let candidates = [
+        root.join("User").join("globalStorage").join("state.vscdb"),
+        root.join("globalStorage").join("state.vscdb"),
+        root.join("state.vscdb"),
+    ];
+    let Some(db_path) = candidates.iter().find(|path| path.exists()) else {
+        return Ok(false);
+    };
+    // 只读打开：避免在「文件不存在」等边缘情况下由 SQLite 兜底新建空库。
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
+    let key = secret_storage_item_key_for(target);
+    match conn.query_row(
+        "SELECT 1 FROM ItemTable WHERE key = ?1 LIMIT 1",
+        [key.as_str()],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        // 空库 / 尚未初始化 ItemTable：按「无该行」处理，不是失败。
+        Err(err) if is_missing_table_error(&err) => Ok(false),
+        Err(err) => Err(format!("查询 {} secret 行失败: {err}", target.display_name)),
+    }
+}
+
+/// SQLite「表不存在」（`no such table`）：空库或尚未初始化 ItemTable。
+fn is_missing_table_error(err: &rusqlite::Error) -> bool {
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("no such table")
 }
 
 /// 加密并写入 CodeBuddy CN secret；保持既有行为。
@@ -824,6 +895,92 @@ mod tests {
         std::fs::write(&db, b"").unwrap();
         let resolved = resolve_state_db_path(Some(&dir)).unwrap();
         assert_eq!(resolved, db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `has_secret_row_for`：只看 key 是否存在（有行 / 无行 / 无文件三态），
+    /// 且不读值、不解密、不创建任何目录或文件。
+    #[test]
+    fn has_secret_row_detects_row_without_creating_files() {
+        let dir =
+            std::env::temp_dir().join(format!("wb-cn-secret-row-test-{}", uuid::Uuid::new_v4()));
+        let db = dir.join("User").join("globalStorage").join("state.vscdb");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+
+        // ① 库文件不存在 → false，且不得顺手创建目录/文件
+        assert!(!has_secret_row_for(&CODEBUDDY_CN_TARGET, Some(&dir)).unwrap());
+        assert!(!db.exists(), "只读探测不得创建 state.vscdb");
+
+        let missing_root = dir.join("no-such-data-dir");
+        assert!(!has_secret_row_for(&CODEBUDDY_CN_TARGET, Some(&missing_root)).unwrap());
+        assert!(!missing_root.exists(), "只读探测不得创建数据目录");
+
+        // ①b 空库（0 字节文件）：ItemTable 尚未初始化 → false，且不得报错
+        std::fs::write(&db, b"").unwrap();
+        assert!(!has_secret_row_for(&CODEBUDDY_CN_TARGET, Some(&dir)).unwrap());
+
+        // ② 表存在但无该 key → false
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES ('other', 'x')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(!has_secret_row_for(&CODEBUDDY_CN_TARGET, Some(&dir)).unwrap());
+
+        // ③ 有该 key → true（值是不可解密的占位串，证明只查存在性、不走解密）
+        let key = secret_storage_item_key();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, 'not-a-ciphertext')",
+            [key.as_str()],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(has_secret_row_for(&CODEBUDDY_CN_TARGET, Some(&dir)).unwrap());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 回归 issue #80：密钥环里确实有密码时，读本机登录信息不能再报
+    /// 「无法加载 Linux secret storage key（v11）」。
+    ///
+    /// 只在本机既有密钥环条目、又有 CodeBuddy CN 数据目录时才验证，
+    /// 无桌面环境（CI）直接跳过。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_v11_secret_is_readable_when_keyring_has_password() {
+        let Some(_password) = crate::modules::linux_keyring::find_password(
+            CODEBUDDY_CN_TARGET.linux_secret_tool_app_names,
+        ) else {
+            return;
+        };
+        let Some(db_path) = codebuddy_cn_state_db_path() else {
+            return;
+        };
+        if !db_path.exists() {
+            return;
+        }
+        read_secret_for(&CODEBUDDY_CN_TARGET, None)
+            .expect("密钥环里有密码时，读取 CodeBuddy CN secret 不应失败");
+    }
+
+    /// Linux 写入 → 读回必须还原原文：有密钥环走 v11、没有则退回 peanuts 的 v10，
+    /// 两条路都要能自洽。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_inject_then_read_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wb-linux-inject-{}", uuid::Uuid::new_v4()));
+        let plaintext = r#"{"token":"tok","accessToken":"uid+tok"}"#;
+        inject_secret_for(&CODEBUDDY_CN_TARGET, plaintext, Some(&dir)).unwrap();
+        let read = read_secret_for(&CODEBUDDY_CN_TARGET, Some(&dir)).unwrap();
+        assert_eq!(read.as_deref(), Some(plaintext));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
