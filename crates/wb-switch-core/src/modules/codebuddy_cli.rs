@@ -1086,9 +1086,11 @@ fn account_index_by_token(accounts: &[Value], token: &str) -> Option<(usize, Str
     })
 }
 
-/// Windows 静态认证下，把当前 CLI 账号刷新后的 token 同步到 settings。
-/// 仅当 settings 当前 token 能匹配该账号（或状态明确指向该账号）时写入，
-/// 避免后台刷新覆盖用户刚刚手动选择的其他账号；失败只返回脱敏错误。
+/// Windows 静态认证下，把当前 CLI 活跃账号刷新后的 token 同步到 settings。
+/// 只要本账号正是 CLI 活跃账号（state 指向它），就无条件把最新 token 写回
+/// settings，让 settings 里的 CLI 认证快照始终跟随 accounts.json，避免脱节；
+/// 仅当 settings 已是最新 token 时跳过写入。非活跃账号一律早退，不会用刷新
+/// 结果覆盖用户刚刚手动切换到的其他账号；失败只返回脱敏错误。
 pub fn sync_windows_env_for_account(
     account_value: &Value,
     previous_access_token: Option<&str>,
@@ -1116,22 +1118,18 @@ pub fn sync_windows_env_for_account(
     let Some(updated_token) = account_value.get("access_token").and_then(Value::as_str) else {
         return Ok(false);
     };
-    // settings 当前 token 必须仍是刷新前 token（或已同步的新 token）；
-    // 否则视为用户已切换/手工修改，不写入。例外：若 settings 当前 token 已无法
-    // 匹配任何账号（孤儿/脱节），且本账号正是活跃账号，则直接写回最新 token 自愈，
-    // 避免每次刷新都因 previous/new 都不命中而永久静默跳过，导致「脱节」反复出现。
+    // 本账号正是 CLI 活跃账号：无条件把最新 token 写回 settings，
+    // 让 settings 里的 CLI 认证快照始终跟随 accounts.json，避免脱节。
+    // 仅当 settings 已是最新 token 时跳过写入（already_synced）。
+    // 不再依赖「settings token == 刷新前 token」的严格比对——保活/惰性刷新、
+    // 重新登录、OAuth 采集、导入都会改 accounts.json 的 token，只要活跃账号没变，
+    // settings 就应当跟进；旧条件会让脱节在 previous/new 都不命中时永久静默存在。
     let current = clean_bearer_token(current_token);
-    let current_orphaned = account_index_by_token(&accounts, current_token).is_none();
-    let previous_matches = previous_access_token
-        .map(clean_bearer_token)
-        .is_some_and(|token| token == current);
     let already_synced = clean_bearer_token(updated_token) == current;
-    if !previous_matches && !already_synced && !current_orphaned {
-        return Ok(false);
-    }
     if already_synced {
         return Ok(true);
     }
+    let _ = previous_access_token; // 严格比对已弃用，参数保留以兼容调用点
     let (previous, value) = prepare_settings_env_update(
         &settings,
         updated_token,
