@@ -159,6 +159,9 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 instance_lock::acquire_or_exit(app.handle());
                 tray::setup(app)?;
+                // 任务栏 / 标题栏图标：显式贴按 DPI 匹配的 raw RGBA，绕开 exe ICO
+                // 的系统选档 + 缩放路径（100% 缩放下 ICO 路径实测发虚）。
+                tray::apply_window_icon(app.handle());
                 // 主窗口由配置创建为不可见；在事件循环呈现前决定本次启动是否静默。
                 // 仅系统自启（精确 `--hidden` 参数）进入静默托盘，普通启动立即显示主窗口。
                 tray::setup_startup_visibility(

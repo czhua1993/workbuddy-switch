@@ -328,6 +328,8 @@ fn exit_lightweight<R: Runtime>(app: &AppHandle<R>) {
     }
     // Window exists now: Windows skip_taskbar was a no-op before recreate.
     apply_dock_visible(app, true);
+    // 重建的窗口没有自定义图标（from_config 只还原配置），重贴一次。
+    apply_window_icon(app);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.unminimize();
@@ -527,6 +529,59 @@ fn tray_icon() -> tauri::image::Image<'static> {
         "/icons/tray-icon-color.rgba"
     ));
     tauri::image::Image::new(ICON, 32, 32)
+}
+
+/// Windows / Linux 窗口图标（任务栏按钮 / 标题栏 / Alt-Tab）。
+///
+/// 不显式设置时这些位置取 exe 内嵌的 `icons/icon.ico`，由系统按尺寸选档再缩放；
+/// 在 100% 缩放且已排除图标缓存的环境下实测任务栏图标发虚。这里改为显式
+/// `set_icon`，并按 scale_factor 提供匹配尺寸，绕开系统的拉伸路径。
+///
+/// 素材由 `scripts/gen-tray-icon.py --src src-tauri/icons/icon-windows.png --size N`
+/// 预解码为 raw RGBA（沿用托盘做法，不引入 `image-png` 依赖）；源图用圆角版
+/// `icon-windows.png`，与 ICO / 开始菜单外观保持一致（无圆角版会显示成方块）。
+#[cfg(not(target_os = "macos"))]
+fn window_icon(scale_factor: f64) -> tauri::image::Image<'static> {
+    const ICON_32: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-32.rgba"));
+    const ICON_48: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-48.rgba"));
+    const ICON_64: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-64.rgba"));
+    const ICON_128: &[u8] =
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-128.rgba"));
+    // 任务栏按钮 / Alt-Tab 的基准是 32 逻辑像素（ICON_BIG）；取 ≥ 需求的最小档，
+    // 让系统做缩小而非放大（缩小不糊），超出档位范围则用最大档兜底。
+    let need = (32.0 * scale_factor.max(1.0)).ceil() as u32;
+    if need <= 32 {
+        tauri::image::Image::new(ICON_32, 32, 32)
+    } else if need <= 48 {
+        tauri::image::Image::new(ICON_48, 48, 48)
+    } else if need <= 64 {
+        tauri::image::Image::new(ICON_64, 64, 64)
+    } else {
+        tauri::image::Image::new(ICON_128, 128, 128)
+    }
+}
+
+/// 给主窗口贴上显式图标。
+///
+/// 轻量模式销毁窗口后会用 `WebviewWindowBuilder::from_config` 重建，而 from_config
+/// 只还原配置（不带自定义图标），因此重建后必须重贴，否则退出轻量模式就打回
+/// exe 的 ICO 路径。
+pub(crate) fn apply_window_icon<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let _ = window.set_icon(window_icon(scale));
+        }
+    }
+    // macOS 的窗口图标无实际展示位（Dock 由 `macos_bundle_dock_icon` 负责）。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+    }
 }
 
 fn format_checkin_tooltip(value: &Value) -> String {
