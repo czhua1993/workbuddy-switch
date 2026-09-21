@@ -5,8 +5,8 @@
 //!
 //! 各目标之间的差异点（数据目录 / secret key / macOS Keychain 服务名 /
 //! Linux `secret-tool` 应用名）全部收敛在 [`VscodeSafeStorageTarget`] 描述符，
-//! CodeBuddy CN IDE（`codebuddy_cn_ide`）与 VS Code CodeBuddy 扩展（`vscode_ext`）
-//! 复用同一套加解密与读写流程。
+//! CodeBuddy CN IDE（`codebuddy_cn_ide`）、CodeBuddy 国际版 IDE（`codebuddy_ide`）
+//! 与 VS Code CodeBuddy 扩展（`vscode_ext`）复用同一套加解密与读写流程。
 //!
 //! 平台加密模型对齐 Chromium/Electron Safe Storage：
 //! - macOS: Keychain「<app> Safe Storage」→ PBKDF2-SHA1(1003) → AES-128-CBC `v10`
@@ -56,7 +56,47 @@ const SALT: &[u8] = b"saltysalt";
 pub const SECRET_EXTENSION_ID: &str = "tencent-cloud.coding-copilot";
 /// CodeBuddy CN IDE 的 secret key（secret key 中的 `key`）。
 pub const SECRET_KEY: &str = "planning-genie.new.accessTokencn";
+/// CodeBuddy 国际版 IDE 的 secret key（secret key 中的 `key`）。
 pub const INTL_SECRET_KEY: &str = "planning-genie.new.accessToken";
+
+/// 一个「基于 Electron/Chromium Safe Storage」的应用目标描述符。
+///
+/// 把各目标之间的差异点参数化后，[`read_secret_for`] / [`inject_secret_for`] 等
+/// 流程可对任意目标复用。新增目标只需提供一个常量描述符。
+pub struct VscodeSafeStorageTarget {
+    /// 数据根目录解析函数；返回 `None` 表示当前平台无法定位。
+    pub data_dir_resolver: fn() -> Option<PathBuf>,
+    /// 目标展示名（用于错误文案）。
+    pub display_name: &'static str,
+    /// secret key 中的 `extensionId` 字段。
+    pub secret_item_prefix_extension_id: &'static str,
+    /// secret key 中的 `key` 字段。
+    pub secret_key: &'static str,
+    /// macOS Keychain 通用密码服务名。
+    pub macos_keychain_service: &'static str,
+    /// Linux `secret-tool` 应用名候选（按顺序尝试）。
+    pub linux_secret_tool_app_names: &'static [&'static str],
+}
+
+/// CodeBuddy CN IDE（桌面客户端）目标描述符。
+pub const CODEBUDDY_CN_TARGET: VscodeSafeStorageTarget = VscodeSafeStorageTarget {
+    data_dir_resolver: codebuddy_cn_data_dir,
+    display_name: "CodeBuddy CN",
+    secret_item_prefix_extension_id: SECRET_EXTENSION_ID,
+    secret_key: SECRET_KEY,
+    macos_keychain_service: "CodeBuddy CN Safe Storage",
+    linux_secret_tool_app_names: &["CodeBuddy CN", "codebuddy cn", "codebuddy-cn", "codebuddycn"],
+};
+
+/// CodeBuddy 国际版 IDE（桌面客户端）目标描述符。
+pub const CODEBUDDY_INTL_TARGET: VscodeSafeStorageTarget = VscodeSafeStorageTarget {
+    data_dir_resolver: codebuddy_intl_data_dir,
+    display_name: "CodeBuddy",
+    secret_item_prefix_extension_id: SECRET_EXTENSION_ID,
+    secret_key: INTL_SECRET_KEY,
+    macos_keychain_service: "CodeBuddy Safe Storage",
+    linux_secret_tool_app_names: &["CodeBuddy", "codebuddy"],
+};
 
 /// CodeBuddy 桌面 IDE 档位：国内 CN 与国际版共用加密，密钥/目录不同。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,49 +142,8 @@ impl CodeBuddyIdeFlavor {
             Self::Intl => &["CodeBuddy", "codebuddy"],
         }
     }
-}
 
-/// 一个「基于 Electron/Chromium Safe Storage」的应用目标描述符。
-///
-/// 把各目标之间的差异点参数化后，[`read_secret_for`] / [`inject_secret_for`] 等
-/// 流程可对任意目标复用。新增目标只需提供一个常量描述符。
-pub struct VscodeSafeStorageTarget {
-    /// 数据根目录解析函数；返回 `None` 表示当前平台无法定位。
-    pub data_dir_resolver: fn() -> Option<PathBuf>,
-    /// 目标展示名（用于错误文案）。
-    pub display_name: &'static str,
-    /// secret key 中的 `extensionId` 字段。
-    pub secret_item_prefix_extension_id: &'static str,
-    /// secret key 中的 `key` 字段。
-    pub secret_key: &'static str,
-    /// macOS Keychain 通用密码服务名。
-    pub macos_keychain_service: &'static str,
-    /// Linux `secret-tool` 应用名候选（按顺序尝试）。
-    pub linux_secret_tool_app_names: &'static [&'static str],
-}
-
-/// CodeBuddy CN IDE（桌面客户端）目标描述符。
-pub const CODEBUDDY_CN_TARGET: VscodeSafeStorageTarget = VscodeSafeStorageTarget {
-    data_dir_resolver: codebuddy_cn_data_dir,
-    display_name: "CodeBuddy CN",
-    secret_item_prefix_extension_id: SECRET_EXTENSION_ID,
-    secret_key: SECRET_KEY,
-    macos_keychain_service: "CodeBuddy CN Safe Storage",
-    linux_secret_tool_app_names: &["CodeBuddy CN", "codebuddy cn", "codebuddy-cn", "codebuddycn"],
-};
-
-/// CodeBuddy 国际版 IDE（桌面客户端）目标描述符。
-pub const CODEBUDDY_INTL_TARGET: VscodeSafeStorageTarget = VscodeSafeStorageTarget {
-    data_dir_resolver: codebuddy_intl_data_dir,
-    display_name: "CodeBuddy",
-    secret_item_prefix_extension_id: SECRET_EXTENSION_ID,
-    secret_key: INTL_SECRET_KEY,
-    macos_keychain_service: "CodeBuddy Safe Storage",
-    linux_secret_tool_app_names: &["CodeBuddy", "codebuddy"],
-};
-
-impl CodeBuddyIdeFlavor {
-    /// 档位对应的目标描述符：CN / 国际版共用同一套加解密流程，仅目录与密钥不同。
+    /// 映射到对应的静态目标描述符。
     pub fn target(self) -> &'static VscodeSafeStorageTarget {
         match self {
             Self::Cn => &CODEBUDDY_CN_TARGET,
@@ -409,8 +408,16 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
             cbData: 0,
             pbData: std::ptr::null_mut(),
         };
-        CryptUnprotectData(&mut data_in, None, None, None, None, 0, &mut data_out)
-            .map_err(|e| format!("DPAPI CryptUnprotectData failed: {e}"))?;
+        CryptUnprotectData(
+            &mut data_in,
+            None,
+            None,
+            None,
+            None,
+            0,
+            &mut data_out,
+        )
+        .map_err(|e| format!("DPAPI CryptUnprotectData failed: {e}"))?;
         if data_out.pbData.is_null() || data_out.cbData == 0 {
             return Err("DPAPI returned empty data".to_string());
         }
@@ -424,8 +431,8 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(target_os = "windows")]
 fn get_windows_encryption_key(data_root: &Path) -> Result<Vec<u8>, String> {
     let local_state = get_local_state_path(data_root)?;
-    let text =
-        std::fs::read_to_string(&local_state).map_err(|e| format!("读取 Local State 失败: {e}"))?;
+    let text = std::fs::read_to_string(&local_state)
+        .map_err(|e| format!("读取 Local State 失败: {e}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析 Local State 失败: {e}"))?;
     let encrypted_key_b64 = json["os_crypt"]["encrypted_key"]
@@ -655,7 +662,8 @@ pub fn inject_secret_for(
     let db_path = resolve_state_db_path_for(target, user_data_dir)?;
     let data_root = data_root_from_db(&db_path)?.to_path_buf();
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建 state.vscdb 父目录失败: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 state.vscdb 父目录失败: {e}"))?;
     }
     let conn = Connection::open(&db_path).map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
     conn.execute(
@@ -739,6 +747,17 @@ mod tests {
     }
 
     #[test]
+    fn flavor_target_matches_flavor_fields() {
+        for flavor in [CodeBuddyIdeFlavor::Cn, CodeBuddyIdeFlavor::Intl] {
+            let target = flavor.target();
+            assert_eq!(target.secret_key, flavor.secret_key());
+            assert_eq!(target.macos_keychain_service, flavor.keychain_service());
+            assert_eq!(target.linux_secret_tool_app_names, flavor.linux_secret_apps());
+            assert_eq!(target.display_name, flavor.product_label());
+        }
+    }
+
+    #[test]
     fn secret_key_for_custom_target_uses_its_fields() {
         let target = VscodeSafeStorageTarget {
             data_dir_resolver: codebuddy_cn_data_dir,
@@ -796,8 +815,10 @@ mod tests {
 
     #[test]
     fn resolve_prefers_existing_candidate() {
-        let dir =
-            std::env::temp_dir().join(format!("wb-cn-ide-path-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!(
+            "wb-cn-ide-path-test-{}",
+            uuid::Uuid::new_v4()
+        ));
         let db = dir.join("User").join("globalStorage").join("state.vscdb");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         std::fs::write(&db, b"").unwrap();

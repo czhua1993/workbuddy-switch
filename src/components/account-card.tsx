@@ -190,6 +190,13 @@ function travelChip(status: TravelStatus | undefined) {
   }
 }
 
+/** VS Code 目标 tooltip：区分「未装 VS Code / 未装扩展 / 可切换」三态。 */
+function vscodeExtTooltip(installed?: boolean, extensionInstalled?: boolean): string {
+  if (!installed) return "未检测到 VS Code";
+  if (!extensionInstalled) return "未检测到 CodeBuddy 扩展";
+  return "切换 VS Code 账号（可选复制会话；需先完全退出 VS Code）";
+}
+
 /** 倒计时：`2h14m 后恢复`；不足 1 分钟按「即将恢复」，已过期由调用方过滤。 */
 function formatRateLimitRemaining(resetAt: number, now: number): string {
   const remainingMs = resetAt - now;
@@ -246,13 +253,6 @@ function rateLimitChip(limits: RateLimitEntry[] | undefined, now: number) {
     variant: "warning",
     count: active.length,
   });
-}
-
-/** VS Code 目标 tooltip：区分「未装 VS Code / 未装扩展 / 可切换」三态。 */
-function vscodeExtTooltip(installed?: boolean, extensionInstalled?: boolean): string {
-  if (!installed) return "未检测到 VS Code";
-  if (!extensionInstalled) return "未检测到 CodeBuddy 扩展";
-  return "切换 VS Code 账号（可选复制会话；需先完全退出 VS Code）";
 }
 
 interface Props {

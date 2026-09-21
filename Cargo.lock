@@ -5432,7 +5432,7 @@ dependencies = [
 
 [[package]]
 name = "wb-switch-core"
-version = "0.1.43"
+version = "0.1.45"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5454,7 +5454,7 @@ dependencies = [
 
 [[package]]
 name = "wb-switch-rust"
-version = "0.1.43"
+version = "0.1.45"
 dependencies = [
  "libc",
  "objc2",
@@ -5473,11 +5473,12 @@ dependencies = [
  "tokio",
  "uuid",
  "wb-switch-core",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "wb-switch-server"
-version = "0.1.43"
+version = "0.1.45"
 dependencies = [
  "axum",
  "rust-embed",

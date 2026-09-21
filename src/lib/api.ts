@@ -35,11 +35,11 @@ import type {
   TravelConfig,
   TravelStatus,
   UpdateInfo,
-  WbVariant,
   VscodeExtStatus,
   VscodeExtSwitchResult,
   VscodeSessionList,
   VscodeSessionRef,
+  WbVariant,
 } from "./types";
 import { DEMO_UNAVAILABLE_MESSAGE, demoModeEnabled } from "./demo-mode";
 import { screenshotDemoResponse } from "./screenshot-demo";
@@ -97,13 +97,13 @@ const ROUTES: Record<string, Route> = {
   get_codebuddy_cn_ide_status: { method: "GET", path: "/api/codebuddy-cn-ide/status" },
   switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
   detect_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/detect" },
-  get_codebuddy_ide_status: { method: "GET", path: "/api/codebuddy-ide/status" },
-  switch_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/switch" },
-  detect_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/detect" },
   get_vscode_ext_status: { method: "GET", path: "/api/vscode-ext/status" },
   list_vscode_sessions: { method: "GET", path: "/api/vscode-ext/sessions" },
   switch_vscode_ext_account: { method: "POST", path: "/api/vscode-ext/switch" },
   detect_vscode_ext_account: { method: "POST", path: "/api/vscode-ext/detect" },
+  get_codebuddy_ide_status: { method: "GET", path: "/api/codebuddy-ide/status" },
+  switch_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/switch" },
+  detect_codebuddy_ide_account: { method: "POST", path: "/api/codebuddy-ide/detect" },
   delete_account: { method: "POST", path: "/api/delete" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
@@ -277,27 +277,6 @@ export function detectCodebuddyCnIdeAccount(): Promise<{
   return call("detect_codebuddy_cn_ide_account");
 }
 
-export function getCodebuddyIdeStatus(): Promise<CodeBuddyCnIdeStatus> {
-  return call("get_codebuddy_ide_status");
-}
-
-export function switchCodebuddyIdeAccount(
-  accountId: string,
-  restart = true,
-): Promise<CodeBuddyCnIdeSwitchResult> {
-  return call("switch_codebuddy_ide_account", { accountId, restart });
-}
-
-export function detectCodebuddyIdeAccount(): Promise<{
-  ok: boolean;
-  found: boolean;
-  matched?: boolean;
-  accountId?: string;
-  message?: string;
-}> {
-  return call("detect_codebuddy_ide_account");
-}
-
 export function getVscodeExtStatus(): Promise<VscodeExtStatus> {
   return call("get_vscode_ext_status");
 }
@@ -324,6 +303,27 @@ export function detectVscodeExtAccount(): Promise<{
   message?: string;
 }> {
   return call("detect_vscode_ext_account");
+}
+
+export function getCodebuddyIdeStatus(): Promise<CodeBuddyCnIdeStatus> {
+  return call("get_codebuddy_ide_status");
+}
+
+export function switchCodebuddyIdeAccount(
+  accountId: string,
+  restart = true,
+): Promise<CodeBuddyCnIdeSwitchResult> {
+  return call("switch_codebuddy_ide_account", { accountId, restart });
+}
+
+export function detectCodebuddyIdeAccount(): Promise<{
+  ok: boolean;
+  found: boolean;
+  matched?: boolean;
+  accountId?: string;
+  message?: string;
+}> {
+  return call("detect_codebuddy_ide_account");
 }
 
 
