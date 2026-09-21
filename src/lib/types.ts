@@ -271,6 +271,8 @@ export interface SwitchResult {
   account: string;
   /** 目标账号自身档位；缺省按国内版处理。 */
   variant?: WbVariant;
+  /** 本次是否重启了 WorkBuddy（false 表示本来未运行，只写入认证、未拉起）。 */
+  restarted?: boolean;
   backup: string | null;
   sessionCopy?: SessionCopyReport;
   /** 本次的会话同步报告（未勾选同步时不返回）；含跳过与失败原因，不只是成功数。 */

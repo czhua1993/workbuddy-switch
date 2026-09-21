@@ -1193,6 +1193,9 @@ pub fn status() -> Value {
 }
 
 /// 切换 CodeBuddy CN IDE 账号：关进程 → 注入 secret → 启动。
+///
+/// 「关 / 启动」只针对**本来就在运行**的实例：未运行时既不关闭也不拉起，
+/// 只注入凭证（用户下次自己打开时即为新账号）。
 pub fn switch_account(account_id: &str, restart: bool) -> Result<Value, String> {
     let acc =
         account::find_account(account_id).ok_or_else(|| format!("账号不存在: {account_id}"))?;
@@ -1211,7 +1214,9 @@ pub fn switch_account(account_id: &str, restart: bool) -> Result<Value, String> 
         ));
     }
 
-    if restart {
+    // 只在本来就在运行时才关 / 才重开：没开的既不关也不拉起，只切换凭证。
+    let was_running = restart && is_codebuddy_cn_running();
+    if was_running {
         eprintln!("[codebuddy-cn-ide] closing CodeBuddy CN…");
         close_codebuddy_cn(20)?;
     }
@@ -1230,22 +1235,27 @@ pub fn switch_account(account_id: &str, restart: bool) -> Result<Value, String> 
 
     set_active_account_id(account_id)?;
 
-    if restart {
+    if was_running {
         eprintln!("[codebuddy-cn-ide] launching CodeBuddy CN…");
         launch_codebuddy_cn()?;
     }
 
+    let name = account::account_display_name(&acc);
+    let message = if was_running {
+        format!("已切换 CodeBuddy IDE 到 {name} 并重启")
+    } else if restart {
+        format!("已切换 CodeBuddy IDE 到 {name}（检测到 CodeBuddy CN 未在运行，无需重启，下次打开即为新账号）")
+    } else {
+        format!("已写入 CodeBuddy IDE 凭证（{name}）；请手动重启 CodeBuddy CN 生效")
+    };
+
     Ok(json!({
         "ok": true,
-        "account": account::account_display_name(&acc),
+        "account": name,
         "accountId": account_id,
         "dbPath": db_path.to_string_lossy(),
-        "restarted": restart,
-        "message": if restart {
-            format!("已切换 CodeBuddy IDE 到 {} 并重启", account::account_display_name(&acc))
-        } else {
-            format!("已写入 CodeBuddy IDE 凭证（{}）；请手动重启 CodeBuddy CN 生效", account::account_display_name(&acc))
-        },
+        "restarted": was_running,
+        "message": message,
     }))
 }
 

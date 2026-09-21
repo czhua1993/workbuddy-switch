@@ -188,7 +188,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       if (res.backup) parts.push(`备份: ${res.backup}`);
       // 成功清理：临时备份已回收，不再展示可还原路径；待清理项单独提示，不写进成功文案。
       toast.success(`已切换至「${nickname}」`, {
-        description: parts.length ? parts.join("；") : `${variantAppName(accountVariant(account))} 已重启为目标账号。`,
+        description: parts.length
+          ? parts.join("；")
+          : res.restarted === false
+            ? `${variantAppName(accountVariant(account))} 未在运行，已写入目标账号；下次打开即为该账号。`
+            : `${variantAppName(accountVariant(account))} 已重启为目标账号。`,
       });
       // 复制失败或被后端跳过时必须显式提示，不能静默当成成功。
       if (copyReport?.error) {

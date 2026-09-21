@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::modules::account;
 use crate::modules::auth_file;
-use crate::modules::process::{close_workbuddy, launch_workbuddy};
+use crate::modules::process::{close_workbuddy, is_workbuddy_running, launch_workbuddy};
 use crate::modules::session::{self, SessionPaths, SyncSelection};
 use crate::modules::session_link::{
     self, Operation, RecoveryReport, LOCK_BUSY_MESSAGE_PREFIX, LOCK_UNAVAILABLE_MESSAGE_PREFIX,
@@ -164,9 +164,14 @@ pub fn switch_account(
     let mut session_report: Option<Value> = None;
     let mut sync_report: Option<Value> = None;
     let mut recovery_report: Option<Value> = None;
+    // 「关 / 启动」只针对**本来就在运行**的实例：未运行时既不关闭也不拉起，
+    // 只写认证文件（用户下次自己打开时即为目标账号）。
+    let was_running = restart && is_workbuddy_running(variant);
     if restart {
-        progress("正在关闭 WorkBuddy…");
-        close_workbuddy(variant, 20)?;
+        if was_running {
+            progress("正在关闭 WorkBuddy…");
+            close_workbuddy(variant, 20)?;
+        }
         // 关进程后先恢复未完成的会话写入：恢复成功或复制侧可安全延后重试的失败
         // 不阻断切换；同步仍未完成、拿不到锁或中间产物异常则暂停启动（design §4 / §5）。
         let recovery = match session::recover_pending_session_operations(variant) {
@@ -272,7 +277,7 @@ pub fn switch_account(
     }
     progress("正在写入认证文件…");
     auth_file::write_account_to_auth_file(&acc, variant)?;
-    if restart {
+    if restart && was_running {
         progress("正在启动 WorkBuddy…");
         launch_workbuddy(variant, Some(&progress))?;
     }
@@ -282,6 +287,7 @@ pub fn switch_account(
         "ok": true,
         "account": account::account_display_name(&acc),
         "variant": variant.as_str(),
+        "restarted": was_running,
         "backup": backup.map(|p| p.to_string_lossy().to_string()),
     });
     if let Some(c) = copy_report {
