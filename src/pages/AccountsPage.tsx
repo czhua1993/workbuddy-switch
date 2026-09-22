@@ -2,12 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import {
-  CalendarCheck,
   Columns3,
   Download,
   ExternalLink,
   FileDown,
   FileUp,
+  CalendarCheck,
   Loader2,
   Plane,
   QrCode,
@@ -31,7 +31,6 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -182,10 +181,11 @@ export default function AccountsPage() {
   const appName = variantAppName(variant);
   const travelAvailable = variantSupportsTravel(variant);
   const checkinAvailable = variantSupportsCheckin(variant);
+  /** 旅行 chip 与旅行状态轮询只在自动旅行开启后生效（配置未读到 = 未开启）。 */
+  const autoTravelEnabled = travelAvailable && autoTravelConfig?.enabled === true;
+  const autoCheckinEnabled = autoCheckinConfig?.enabled ?? false;
   /** 刷新按钮文案：国际版没有签到接口，只刷新积分。 */
   const refreshCreditsLabel = checkinAvailable ? "签到并刷新全部账号积分" : "刷新全部账号积分";
-  const autoCheckinEnabled = autoCheckinConfig?.enabled ?? false;
-  const autoTravelEnabled = autoTravelConfig?.enabled ?? false;
   /** 紧凑模式：卡片更小、同屏更多列；默认开启，持久化到 localStorage */
   const [compact, setCompact] = useState<boolean>(() => {
     try {
@@ -280,7 +280,7 @@ export default function AccountsPage() {
   useVisibleInterval(
     () => void ensureTravel(travelAccountIds),
     TRAVEL_REFRESH_INTERVAL_MS,
-    travelAvailable && travelAccountIds.length > 0,
+    autoTravelEnabled && travelAccountIds.length > 0,
   );
 
   /**
@@ -848,9 +848,6 @@ export default function AccountsPage() {
                           aria-label={autoCheckinEnabled ? "自动签到已开启" : "自动签到已关闭"}
                           aria-busy={autoCheckinSaving}
                         >
-                          {/* 品牌色必须落在图标上而非 Button：ghost 的 hover:text-accent-foreground
-                              (button.tsx:18) 特异性高于单个 text-brand，会把开启态在悬停时抹成关闭态的样子。
-                              子元素自带 color 胜过父级继承，与特异性无关。 */}
                           {autoCheckinSaving
                             ? <Loader2 className={cn("animate-spin", autoCheckinEnabled && "text-brand")} />
                             : <CalendarCheck className={cn(autoCheckinEnabled && "text-brand")} />}
@@ -879,7 +876,6 @@ export default function AccountsPage() {
                           aria-label={autoTravelEnabled ? "自动旅行已开启" : "自动旅行已关闭"}
                           aria-busy={autoTravelSaving}
                         >
-                          {/* 同签到：品牌色落在图标上，避免被 ghost 的 hover:text-accent-foreground 抹掉 */}
                           {autoTravelSaving
                             ? <Loader2 className={cn("animate-spin", autoTravelEnabled && "text-brand")} />
                             : <Plane className={cn(autoTravelEnabled && "text-brand")} />}
@@ -893,7 +889,6 @@ export default function AccountsPage() {
                 </Tooltip>
               )}
               {/* 左侧开关都隐藏时（如国际版）不画悬空分隔线 */}
-              {(checkinAvailable || travelAvailable) && <Separator orientation="vertical" className="mx-2 h-5" />}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -965,7 +960,7 @@ export default function AccountsPage() {
                 onCheckin={onCheckin}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
-                travelStatus={travelMap[a.id]}
+                travelStatus={autoTravelEnabled ? travelMap[a.id] : undefined}
                 rateLimits={rateLimitEnabled ? rateLimitMap[a.id] : undefined}
                 credit={creditMap[a.id]}
                 creditLoading={creditLoadingMap[a.id]}

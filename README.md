@@ -1,27 +1,14 @@
 # workbuddy-switch
 
-WorkBuddy / CodeBuddy CLI / CodeBuddy CN IDE 账号切换桌面 App（Tauri），支持积分到期监控与自动签到。
-
-同时提供 npm / webui 版本，方便在浏览器中使用同一套账号管理能力。
-
-- **桌面 App**：从 GitHub Releases 下载 macOS、Windows 或 Linux 安装包（Tauri，推荐日常使用）
-- **npm / webui**：`npm i -g workbuddy-switch` 后运行 `workbuddy-switch`，浏览器打开操作界面
-
-多账号共享登录态，一键切换 WorkBuddy 登录账号，并支持将当前账号的会话复制给目标账号（云端归属目标）。
+WorkBuddy、CodeBuddy IDE、CodeBuddy CLI 与 VS Code CodeBuddy 插件账号切换桌面 App（Tauri），四者均支持国内版 / 国际版，并提供积分到期与 Token 用量监控。
 
 <p align="center">
   <img src="public/icon-transparent.png" alt="WorkBuddy Switch 图标" width="128" />
 </p>
 
-<p align="center">
-  <strong>workbuddy-switch</strong><br />
-  WorkBuddy / CodeBuddy CLI 账号切换工具
-</p>
+多账号共享登录态，一键切换 WorkBuddy 登录账号。**会话复制**：把当前账号的会话以新 id 复制给目标账号，源账号数据不受影响，云端归属目标账号。
 
-
-### 在线演示
-
-[打开 GitHub Pages 在线演示](https://changexbc.github.io/workbuddy-switch/)（只读演示；账号、积分与请求记录均为虚构数据，所有业务操作均已禁用。）
+**在线演示**：[打开 GitHub Pages 演示](https://changexbc.github.io/workbuddy-switch/)（只读演示；账号、积分与请求记录均为虚构数据，所有业务操作均已禁用）
 
 ## 快速开始
 
@@ -54,6 +41,8 @@ xattr -rd com.apple.quarantine "/Applications/workbuddy-switch.app"
 
 应用能启动但切换账号时提示无权限，请参阅下方 [macOS 权限说明](#macos-权限说明)。
 
+另有 npm / webui 版本可在浏览器中使用，见文末 [npm / webui 版本](#npm--webui-版本)。
+
 ## 功能
 
 | 模块 | 说明 |
@@ -76,7 +65,7 @@ xattr -rd com.apple.quarantine "/Applications/workbuddy-switch.app"
 
 ## 使用
 
-1. **添加账号**：账号页 →「扫码登录」（OAuth device flow）或「从本机导入」「手动添加」
+1. **添加与导出账号**：账号页 →「OAuth 扫码登录」「导入本机账号」「导入备份」；「导出」可将勾选账号备份为 JSON
 2. **切换账号**：账号卡片 →「切换」，可勾选复制当前会话
 3. **自动签到**：账号页可直接开关；设置页可调整保活参数、立即签到并查看日志
 4. **查看积分到期**：账号页会自动查询各账号积分资源；点击「刷新积分」可手动更新，临近到期的资源会高亮，并把快过期账号按最近到期时间排序，最前面的标记为「建议优先使用」
@@ -104,72 +93,23 @@ xattr -rd com.apple.quarantine "/Applications/workbuddy-switch.app"
 
 ### 管理 WorkBuddy 与 CodeBuddy 账号
 
-账号卡片集中展示登录状态、签到状态、积分余额和到期资源，支持切换 WorkBuddy 当前账号，并设置 CodeBuddy CLI 的默认账号（确认后先关闭运行中的 CLI，切换立即生效）。临期积分会直接标注在对应卡片内，并按紧迫程度优先排列。
+账号卡片集中展示登录状态、积分余额和到期资源，临期积分直接标注在对应卡片内，并按紧迫程度优先排列。
 
-<table>
-  <thead>
-    <tr>
-      <th>浅色模式</th>
-      <th>深色模式</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/accounts-overview-light.png" alt="账号管理页面（浅色模式，账号信息已脱敏）" /></td>
-      <td><img src="docs/images/accounts-overview-dark.png" alt="账号管理页面（深色模式，账号信息已脱敏）" /></td>
-    </tr>
-  </tbody>
-</table>
+![账号管理页面（账号信息已脱敏）](docs/images/accounts-overview.png)
 
 ### 积分统计
 
-积分统计页展示官方请求用量、每日趋势、模型分布、账号消耗和请求明细。数据来源和更新时间会明确显示。
+积分统计页展示官方请求用量、每日趋势、模型分布、账号消耗和请求明细，数据来源与更新时间会明确显示。
 
-<table>
-  <thead>
-    <tr>
-      <th>浅色模式</th>
-      <th>深色模式</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/credit-statistics-light.png" alt="积分统计趋势页面（浅色模式）" /></td>
-      <td><img src="docs/images/credit-statistics-dark.png" alt="积分统计趋势页面（深色模式）" /></td>
-    </tr>
-  </tbody>
-</table>
+![积分统计页面](docs/images/credit-statistics.png)
 
 ### Token 统计
 
 Token 统计页按来源展示 Token 总览和每日趋势，覆盖 WorkBuddy、CodeBuddy CLI 与 CodeBuddy IDE / VS Code CodeBuddy 插件：输入、输出、缓存读写使用 K/M/B 紧凑单位，趋势图用堆叠柱表示每日 Token 总量与构成，用虚线表示调用次数；同时提供 Token 构成占比、活跃热力图、项目/模型 Top 10 和会话排行，帮助快速定位主要消耗来源。
 
+![Token 统计页面](docs/images/token-statistics.png)
 
-### 自动轮换策略
-
-自动轮换的目标是防止积分过期浪费：后台定时查询所有账号的积分到期情况，把 CodeBuddy CLI 的默认账号设为「最紧迫」的账号（最早到期且仍有剩余积分）。为避免默认账号频繁变化，每次检查按以下顺序决策：
-
-1. **有效账号**：查询成功、未过期、有剩余积分的账号才可被选为目标
-2. **紧迫度检查**：所有账号到期都还早（最紧迫的剩余超过 `min_urgency_hours`，默认 72 小时）→ 不切
-3. **已是目标**：CLI 默认账号就是最紧迫账号 → 不切
-4. **冷却期**：切换后 `cooldown_minutes`（默认 120）内不重复切
-5. **存活门控**：`~/.codebuddy/sessions/*.json` 里存在心跳新鲜（`lastHeartbeat` 在 120 秒内）的 CLI 会话 → 不切。活着的 CLI 进程持有的是**进程级快照**的 key，切了也不生效；此时改动 `state.json` 反而会破坏「活进程持有的 key == 当前默认账号」这个不变式
-6. **价值过滤**：目标账号剩余积分低于 `min_remaining_credits` → 不值得切（默认 0 关闭；每次检查会把各账号剩余积分写入日志，可据此调整）
-7. **防抖动**：目标比当前早到期但差异小于 `min_gap_hours`（默认 24）→ 不切
-
-> **为什么关进程后再切（手动切换）**：CLI 的 key 是进程级快照，正在运行的进程不会因为 `state.json` 变了就换号。因此手动切换固定「先关闭正在运行的 CLI → 再写 `state.json`」，保证任何时刻都在运行的进程用的就是当前默认账号。副作用是当前 CLI 会话会中断，重新打开即可。
-
-> **轮换的生效边界与推迟提示**：轮换只在**没有 CLI 会话运行**时才切，所以不需要关闭任何进程；切换后下一次启动 CLI 即为新账号。若因为存活门控被跳过、但其它条件本来都会切换（例如当前账号 3 天后到期、另一账号 1 天后到期），会同时发**应用内提示**（窗口开着时的 toast）与**系统通知**：`「账号」的积分 N 天后到期，但检测到有 CodeBuddy CLI 会话在运行；重启 CLI 后新账号才会生效。` 同一自然日最多提示 5 次（计数存于 `~/.wb-switch/auto_rotate_notify.json`，跨日自动清零），超出只写入轮换日志；两账号到期接近（差异未达 `min_gap_hours`）时不会提示。
->
-> 系统通知是**尽力而为**：开发态（`tauri dev`）下通知会被登记到「终端」名下，且投递结果无法从插件观测（`show()` 恒返回成功）。窗口开着时以应用内提示为准，设置页也会显示最近一次推迟原因。
-
-配置项：`check_interval_minutes`（检查间隔，默认 5）、`cooldown_minutes`、`min_urgency_hours`、`min_remaining_credits`、`min_gap_hours`。可在设置页调整，或直接编辑 `~/.wb-switch/auto_rotate_config.json`。
-
-> 兼容说明：旧配置键 `active_guard_minutes`（按 transcript 修改时间的 30 分钟「活跃保护」）已不再参与决策——它管不住"开着但闲置"的会话，还会全量扫描 `~/.codebuddy/projects`。该键仍会被读取而不报错，设置页不再展示。
-> 接口兼容：`POST /api/codebuddy-cli/switch` 与 Tauri `switch_codebuddy_cli_account` 的 `closeRunningCli` 入参**已废弃**（保留接受但忽略）。
-> 历史遗留：早期版本写入的 `~/.wb-switch/cli_switch_history.jsonl` 不再被读取，也不会被自动删除（不清理用户数据）。
-
-### macOS 权限说明
+## macOS 权限说明
 
 切换账号需要写入 WorkBuddy 认证文件，macOS 要求授权「App 管理」（或「完全磁盘访问」）：
 
@@ -177,7 +117,15 @@ Token 统计页按来源展示 Token 总览和每日趋势，覆盖 WorkBuddy、
 2. 优先在 **App 管理** 里打开 workbuddy-switch 开关；若没有，则去 **完全磁盘访问** 把 workbuddy-switch 拖进带箭头的框
 3. 授权后重启本应用生效；设置页「权限检测」可随时验证
 
-> webui 模式：由启动服务的终端进程权限决定；若终端已授权完全磁盘访问则无需额外操作。
+## npm / webui 版本
+
+```bash
+npm i -g workbuddy-switch
+workbuddy-switch              # 启动本地服务 + 自动打开浏览器
+workbuddy-switch status       # 终端查看当前账号
+```
+
+界面与桌面 App 一致，功能覆盖上方全部模块。webui 模式下的 macOS 权限由启动服务的终端进程决定；若终端已授权完全磁盘访问则无需额外操作。
 
 ## 致谢
 
