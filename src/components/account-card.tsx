@@ -41,18 +41,27 @@ function formatCredits(value: number): string {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
 }
 
+/** 积分包到期时刻（精确到分）。行内不再带「到期」后缀：区块标题已表达，带后缀会把名称列挤到截断。 */
 function formatCreditExpiry(ts: number | null): string {
   if (!ts) return "长期有效";
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "长期有效";
-  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} 到期`;
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} ${hh}:${mm}`;
 }
 
-function formatFullDate(ts: number | null): string {
+function formatFullDateTime(ts: number | null): string {
   if (!ts) return "—";
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatCreditUpdatedAt(ts: number | undefined): string {
@@ -193,8 +202,8 @@ function travelChip(status: TravelStatus | undefined) {
 /** VS Code 目标 tooltip：区分「未装 VS Code / 未装扩展 / 可切换」三态。 */
 function vscodeExtTooltip(installed?: boolean, extensionInstalled?: boolean): string {
   if (!installed) return "未检测到 VS Code";
-  if (!extensionInstalled) return "未检测到 CodeBuddy 扩展";
-  return "切换 VS Code 账号（可选复制会话；可自动关闭并重开）";
+  if (!extensionInstalled) return "未检测到 VS Code CodeBuddy 插件";
+  return "切换 VS Code CodeBuddy 插件账号（可选复制会话；可自动关闭并重开）";
 }
 
 /** 倒计时：`2h14m 后恢复`；不足 1 分钟按「即将恢复」，已过期由调用方过滤。 */
@@ -311,7 +320,7 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
       : product === "codebuddy-cn"
         ? "CodeBuddy IDE 当前账号"
         : product === "vscode-ext"
-          ? "VS Code CodeBuddy 当前账号"
+          ? "VS Code CodeBuddy 插件当前账号"
           : "CodeBuddy CLI 当前账号";
   return (
     <span
@@ -365,9 +374,10 @@ function CreditResourceRow({ resource, compact, placeholderLabel }: { resource?:
   const name = resource ? creditResourceName(resource, "积分包") : "\u00a0";
   const remainingText = resource ? `${formatCredits(resource.remaining)} 积分` : "\u00a0";
   const expiryText = resource ? formatCreditExpiry(resource.expireAt) : "\u00a0";
+  const expiryTitle = resource?.expireAt ? `${expiryText} 到期` : expiryText;
   const ratio = resource && resource.total > 0 ? Math.min(100, Math.max(0, (resource.remaining / resource.total) * 100)) : 0;
   const barTone = resource && (resource.expiringSoon || resource.expired) ? "bg-orange-500" : "bg-primary";
-  const title = resource ? `${name} · 剩余 ${formatCredits(resource.remaining)} / ${formatCredits(resource.total)} · ${expiryText}` : undefined;
+  const title = resource ? `${name} · 剩余 ${formatCredits(resource.remaining)} / ${formatCredits(resource.total)} · ${expiryTitle}` : undefined;
   return (
     <div className={cn("min-w-0", placeholder && "invisible")} aria-hidden={placeholder || undefined} title={title}>
       <div className={cn("grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3", compact ? "text-[11px]" : "text-xs")}>
@@ -471,11 +481,11 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
         className={cn(
           "relative flex items-center border-b border-border",
           compact ? "min-h-[52px] px-3.5 py-1.5" : "min-h-[104px] px-5 py-3",
-          /* 选中态染色，优先级：WorkBuddy（品牌绿）> CodeBuddy IDE（淡紫）> CodeBuddy CLI（中性灰）> 默认。
+          /* 选中态染色，优先级：WorkBuddy / VS Code 插件（品牌绿）> CodeBuddy IDE（淡紫）> CodeBuddy CLI（中性灰）> 默认。
              多个产品同时选中时取优先级最高者；具体哪几个产品在使用由 header 的标记+勾选角标表达。
              CodeBuddy IDE 的紫是产品专属色：主题里没有对应语义 token，故用 Tailwind 的 violet-500
              （本文件 AVATAR_TONES 已在用同一调色板），透明度与 WorkBuddy 的 /5、/15 保持同一强度。 */
-          workbuddyActive ? "bg-primary/5" : codebuddyCnIdeActive ? "bg-violet-500/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
+          workbuddyActive || vscodeExtActive ? "bg-primary/5" : codebuddyCnIdeActive ? "bg-violet-500/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
         )}
       >
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -483,7 +493,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
             className={cn(
               "absolute -right-10 -top-16 rounded-full blur-2xl",
               compact ? "size-20" : "size-24",
-              workbuddyActive ? "bg-primary/15" : codebuddyCnIdeActive ? "bg-violet-500/15" : codebuddyCliActive ? "bg-muted/50" : "bg-muted/30",
+              workbuddyActive || vscodeExtActive ? "bg-primary/15" : codebuddyCnIdeActive ? "bg-violet-500/15" : codebuddyCliActive ? "bg-muted/50" : "bg-muted/30",
             )}
           />
           {workbuddyActive && (
@@ -502,6 +512,13 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                完全重合，因此无需再引入第三套偏移规则。 */
             <div className={cn("absolute top-[64%] -translate-y-1/2 opacity-[0.075] saturate-50 grayscale-[10%]", codebuddyCliActive ? "right-[68px] rotate-[8deg]" : "right-5 rotate-[7deg]")}>
               <WorkBuddyMark size={compact ? 40 : 56} />
+            </div>
+          )}
+          {vscodeExtActive && (
+            /* 插件标记是 currentColor 字形（无底块）：显式取品牌绿，与 WorkBuddy 水印同色系；
+               位置规则同 WorkBuddy / IDE，两者同时选中时重合（同样无需第三套偏移规则）。 */
+            <div className={cn("absolute top-[64%] -translate-y-1/2 text-primary opacity-[0.075] saturate-50 grayscale-[10%]", codebuddyCliActive ? "right-[68px] rotate-[8deg]" : "right-5 rotate-[7deg]")}>
+              <VscodeExtMark size={compact ? 40 : 56} />
             </div>
           )}
         </div>
@@ -609,18 +626,18 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       </span>
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top">VS Code CodeBuddy 当前账号</TooltipContent>
+                  <TooltipContent side="top">VS Code CodeBuddy 插件当前账号</TooltipContent>
                 </Tooltip>
               ) : demoModeEnabled ? (
                 <DemoAction>
-                  <Button variant="outline" size="icon" className="relative size-7 rounded-lg" aria-label="切换到 VS Code 扩展（可复制会话）">
+                  <Button variant="outline" size="icon" className="relative size-7 rounded-lg" aria-label="切换到 VS Code CodeBuddy 插件（可复制会话）">
                     <VscodeExtMark size={15} />
                   </Button>
                 </DemoAction>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !vscodeExtAvailable || !onSwitchVscodeExt || vscodeExtBusy} onClick={() => onSwitchVscodeExt?.(account)} aria-label="切换到 VS Code 扩展（可复制会话）" aria-busy={vscodeExtLoading}>
+                    <Button variant="outline" size="icon" className="relative size-7 rounded-lg" disabled={featuresDisabled || !vscodeExtAvailable || !onSwitchVscodeExt || vscodeExtBusy} onClick={() => onSwitchVscodeExt?.(account)} aria-label="切换到 VS Code CodeBuddy 插件（可复制会话）" aria-busy={vscodeExtLoading}>
                       {vscodeExtLoading ? <Loader2 className="size-3.5 animate-spin" /> : <VscodeExtMark size={15} />}
                     </Button>
                   </TooltipTrigger>
@@ -694,7 +711,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                 </button>
               </span>
               <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>{resources.length} 个积分包</span>
-              <div className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={expiringAmount > 0 ? `${formatCredits(expiringAmount)} 积分将在 7 天内到期` : resources[0]?.expireAt ? `最近到期 ${formatCreditExpiry(resources[0].expireAt).replace(" 到期", "")}` : "当前积分长期有效"}>
+              <div className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={expiringAmount > 0 ? `${formatCredits(expiringAmount)} 积分将在 7 天内到期` : resources[0]?.expireAt ? `最近到期 ${formatCreditExpiry(resources[0].expireAt)}` : "当前积分长期有效"}>
                 <Clock3 className="size-3.5 shrink-0" />
                 <span className="whitespace-nowrap tabular-nums">{creditUpdatedAt ? `${formatCreditUpdatedAt(creditUpdatedAt)} 更新` : "—"}</span>
               </div>
@@ -766,14 +783,14 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
           )}
           {vscodeExtActive ? <ProductCurrentState product="vscode-ext" compact /> : demoModeEnabled ? (
             <DemoAction>
-              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="切换到 VS Code 扩展（可复制会话）">
+              <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" aria-label="切换到 VS Code CodeBuddy 插件（可复制会话）">
                 <VscodeExtMark size={18} /><span>VS Code</span>
               </Button>
             </DemoAction>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !vscodeExtAvailable || !onSwitchVscodeExt || vscodeExtBusy} onClick={() => onSwitchVscodeExt?.(account)} aria-label="切换到 VS Code 扩展（可复制会话）" aria-busy={vscodeExtLoading}>
+                <Button variant="outline" size="sm" className="h-7 rounded-full px-2.5 pr-3.5 text-xs" disabled={featuresDisabled || !vscodeExtAvailable || !onSwitchVscodeExt || vscodeExtBusy} onClick={() => onSwitchVscodeExt?.(account)} aria-label="切换到 VS Code CodeBuddy 插件（可复制会话）" aria-busy={vscodeExtLoading}>
                   {vscodeExtLoading ? <Loader2 className="size-4 animate-spin" /> : <VscodeExtMark size={18} />}<span>{vscodeExtLoading ? "切换中…" : "VS Code"}</span>
                 </Button>
               </TooltipTrigger>
@@ -812,7 +829,7 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium">{creditResourceName(resource, "未命名资源包")}</div>
                         <div className="mt-1 text-[11px] text-muted-foreground">
-                          {resource.expired ? "已到期" : resource.expireAt ? `到期 ${formatFullDate(resource.expireAt)}` : "长期有效"}
+                          {resource.expired ? "已到期" : resource.expireAt ? `到期 ${formatFullDateTime(resource.expireAt)}` : "长期有效"}
                         </div>
                       </div>
                       <div className="shrink-0 text-right text-xs">

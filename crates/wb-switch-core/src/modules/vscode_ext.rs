@@ -24,6 +24,7 @@ use crate::modules::auth_file::build_account_obj;
 use crate::modules::codebuddy_cn_ide::{match_account_for_token, parse_token_from_secret};
 use crate::modules::config::{atomic_write, now_ms, store_dir};
 use crate::modules::process;
+use crate::modules::variant::codebuddy_domain_for;
 use crate::modules::vscode_cn_inject::{
     has_secret_row_for, inject_secret_for, read_secret_for, state_db_path_for,
     VscodeSafeStorageTarget,
@@ -144,7 +145,10 @@ fn account_entry_key(entry: &Value) -> Option<&str> {
 /// （`accounts` 单元素）。
 pub fn build_ext_session_json(acc: &Value, existing: Option<&str>) -> String {
     let uid = get_str(acc, "uid").unwrap_or_default();
-    let domain = get_str(acc, "domain").unwrap_or_default();
+    let domain = codebuddy_domain_for(
+        get_str(acc, "domain").unwrap_or_default().as_str(),
+        account::variant_of(acc),
+    );
     let refresh_token = get_str(acc, "refresh_token").unwrap_or_default();
     let access_token = get_str(acc, "access_token").unwrap_or_default();
     let token_type = get_str(acc, "token_type").unwrap_or_else(|| "Bearer".to_string());
@@ -511,7 +515,7 @@ fn running_instance() -> RunningInstance {
 fn close_timeout_error(alive: &[u32]) -> String {
     let pids: Vec<String> = alive.iter().map(|pid| pid.to_string()).collect();
     format!(
-        "等待 VS Code 退出超时（仍有进程运行: {}）。请在 VS Code 中处理保存提示或手动退出后重试。",
+        "等待 VS Code 退出超时（仍有进程运行: {}）。请在 VS Code 中处理保存提示；若你在等待期间重新打开过 VS Code，请退出后重试。",
         pids.join(", ")
     )
 }
@@ -671,7 +675,7 @@ fn launch_vscode(inst: &RunningInstance) -> Result<(), String> {
 fn describe_inject_error(err: String) -> String {
     if err.contains("Safe Storage") || err.contains("Keychain") {
         format!(
-            "注入登录状态失败：{err}\n\n请先手动打开 VS Code 并登录一次 CodeBuddy 扩展，确保系统凭据存储中存在「Code Safe Storage」条目后再试。"
+            "注入登录状态失败：{err}\n\n请先手动打开 VS Code 并登录一次 CodeBuddy 插件，确保系统凭据存储中存在「Code Safe Storage」条目后再试。"
         )
     } else {
         err
@@ -682,13 +686,13 @@ fn describe_inject_error(err: String) -> String {
 fn switch_message(name: &str, restarted: bool, relaunch_error: Option<&str>) -> String {
     match (restarted, relaunch_error) {
         (true, _) => {
-            format!("已写入 VS Code CodeBuddy 扩展凭证（{name}），VS Code 已重新打开。")
+            format!("已写入 VS Code CodeBuddy 插件凭证（{name}），VS Code 已重新打开。")
         }
         (false, Some(err)) => format!(
-            "已写入 VS Code CodeBuddy 扩展凭证（{name}），但自动重新打开 VS Code 失败：{err}；请手动打开 VS Code 生效。"
+            "已写入 VS Code CodeBuddy 插件凭证（{name}），但自动重新打开 VS Code 失败：{err}；请手动打开 VS Code 生效。"
         ),
         (false, None) => {
-            format!("已写入 VS Code CodeBuddy 扩展凭证（{name}）；请打开 VS Code 生效。")
+            format!("已写入 VS Code CodeBuddy 插件凭证（{name}）；请打开 VS Code 生效。")
         }
     }
 }
@@ -702,7 +706,7 @@ pub(crate) fn validate_switch_target(account_id: &str) -> Result<(Value, PathBuf
     let acc =
         account::find_account(account_id).ok_or_else(|| format!("账号不存在: {account_id}"))?;
     let token = get_str(&acc, "access_token")
-        .ok_or_else(|| "账号缺少 access_token，无法注入 VS Code CodeBuddy 扩展".to_string())?;
+        .ok_or_else(|| "账号缺少 access_token，无法注入 VS Code CodeBuddy 插件".to_string())?;
     if token.is_empty() {
         return Err("账号 access_token 为空".to_string());
     }
@@ -710,7 +714,7 @@ pub(crate) fn validate_switch_target(account_id: &str) -> Result<(Value, PathBuf
     let data_dir = vscode_data_dir().ok_or_else(|| "无法定位 VS Code 数据目录".to_string())?;
     if !data_dir.exists() {
         return Err(format!(
-            "未找到 VS Code 用户数据目录（{}）。请先手动打开 VS Code 并安装 CodeBuddy 扩展后重试。",
+            "未找到 VS Code 用户数据目录（{}）。请先手动打开 VS Code 并安装 CodeBuddy 插件后重试。",
             data_dir.display()
         ));
     }
@@ -719,7 +723,7 @@ pub(crate) fn validate_switch_target(account_id: &str) -> Result<(Value, PathBuf
         vscode_ext_state_db_path().ok_or_else(|| "无法定位 VS Code 数据目录".to_string())?;
     if !db_path.exists() {
         return Err(format!(
-            "未找到 VS Code 状态数据库（{}）。请先手动打开一次 VS Code（无需先登录扩展）后重试。",
+            "未找到 VS Code 状态数据库（{}）。请先手动打开一次 VS Code（无需先登录插件）后重试。",
             db_path.display()
         ));
     }
@@ -863,11 +867,11 @@ pub fn detect_current_account() -> Result<Value, String> {
         return Ok(json!({
             "ok": true,
             "found": false,
-            "message": "本机 VS Code 未找到 CodeBuddy 扩展登录 secret",
+            "message": "本机 VS Code 未找到 CodeBuddy 插件登录 secret",
         }));
     };
     let Some((uid, token)) = parse_token_from_secret(&secret) else {
-        return Err("本地 VS Code CodeBuddy 扩展登录信息解析失败".to_string());
+        return Err("本地 VS Code CodeBuddy 插件登录信息解析失败".to_string());
     };
     if let Some(acc) = match_account_for_token(uid.as_deref(), &token) {
         let id = get_str(&acc, "id").unwrap_or_default();
@@ -886,7 +890,7 @@ pub fn detect_current_account() -> Result<Value, String> {
         "found": true,
         "matched": false,
         "uid": uid,
-        "message": "本机 VS Code 已登录 CodeBuddy 扩展，但账号库中无匹配账号；可先用「从本机导入」或扫码登录同步账号后再切换。",
+        "message": "本机 VS Code 已登录 CodeBuddy 插件，但账号库中无匹配账号；可先用「从本机导入」或扫码登录同步账号后再切换。",
     }))
 }
 
@@ -932,6 +936,29 @@ mod tests {
         assert_eq!(v["converted"], true);
         // 未登录既有 secret 时补 accounts 单元素数组
         assert_eq!(v["accounts"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    /// WorkBuddy 产品域注入 CodeBuddy 扩展前必须规范化：否则扩展把域归为 `selfhosted`
+    /// （该分支会读「企业版端点」设置）；企业自建域保持原样。
+    #[test]
+    fn ext_session_json_normalizes_workbuddy_domain() {
+        let acc = json!({
+            "uid": "u-9",
+            "nickname": "张佳",
+            "access_token": "tok-9",
+            "domain": "www.workbuddy.cn",
+        });
+        let v: Value = serde_json::from_str(&build_ext_session_json(&acc, None)).unwrap();
+        assert_eq!(v["domain"], "www.codebuddy.cn");
+        assert_eq!(v["auth"]["domain"], "www.codebuddy.cn");
+
+        let corp = json!({
+            "uid": "u-c",
+            "access_token": "tok-c",
+            "domain": "corp.example.com",
+        });
+        let vc: Value = serde_json::from_str(&build_ext_session_json(&corp, None)).unwrap();
+        assert_eq!(vc["domain"], "corp.example.com");
     }
 
     #[test]
@@ -1140,10 +1167,9 @@ mod tests {
     fn close_timeout_error_lists_pids_and_manual_hint() {
         let message = close_timeout_error(&[4242, 4243]);
         assert!(message.contains("4242, 4243"), "{message}");
-        assert!(
-            message.contains("请在 VS Code 中处理保存提示或手动退出"),
-            "{message}"
-        );
+        assert!(message.contains("请在 VS Code 中处理保存提示"), "{message}");
+        // 等待期间被重新打开也会表现为「仍有进程」→ 文案要点出这条排查方向。
+        assert!(message.contains("重新打开过 VS Code"), "{message}");
     }
 
     fn instance_with_pids(pids: Vec<u32>) -> RunningInstance {
