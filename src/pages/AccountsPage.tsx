@@ -150,6 +150,7 @@ export default function AccountsPage() {
     setAutoTravelConfig,
     forgetAccount,
     invalidateCheckin,
+    markCheckedIn,
   } = useAccountStatusStore();
   const [oauthOpen, setOauthOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -160,6 +161,8 @@ export default function AccountsPage() {
   const [importing, setImporting] = useState(false);
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
+  /** 自动签到配置是否已读取完毕（成功或失败）：区分「尚未读到」与「读取失败」。 */
+  const [autoCheckinSettled, setAutoCheckinSettled] = useState(false);
   const [codebuddyCliSwitchingId, setCodebuddyCliSwitchingId] = useState<string | null>(null);
   const [codebuddyCnIdeSwitchingId, setCodebuddyCnIdeSwitchingId] = useState<string | null>(null);
   /** VS Code 扩展切换弹窗目标（null=关闭）；切换与可选会话复制在弹窗内完成。 */
@@ -185,7 +188,21 @@ export default function AccountsPage() {
   const autoTravelEnabled = travelAvailable && autoTravelConfig?.enabled === true;
   const autoCheckinEnabled = autoCheckinConfig?.enabled ?? false;
   /** 刷新按钮文案：国际版没有签到接口，只刷新积分。 */
-  const refreshCreditsLabel = checkinAvailable ? "签到并刷新全部账号积分" : "刷新全部账号积分";
+  const refreshCreditsLabel = checkinAvailable
+    ? "刷新全部账号积分并签到（忽略已关闭自动签到的账号）"
+    : "刷新全部账号积分";
+  /** 关闭自动签到的账号 id（配置未读到/读取失败 = 空名单）。 */
+  const excludedCheckinIds = useMemo(
+    () => new Set(autoCheckinConfig?.excluded_account_ids ?? []),
+    [autoCheckinConfig],
+  );
+  /** 今日签到状态只查未关闭自动签到的账号；配置就绪前不发请求。 */
+  const autoCheckinAccountIds = useMemo(() => {
+    if (!checkinAvailable || !autoCheckinSettled) return [];
+    return visibleAccounts
+      .filter((account) => !excludedCheckinIds.has(account.id))
+      .map((account) => account.id);
+  }, [visibleAccounts, checkinAvailable, autoCheckinSettled, excludedCheckinIds]);
   /** 紧凑模式：卡片更小、同屏更多列；默认开启，持久化到 localStorage */
   const [compact, setCompact] = useState<boolean>(() => {
     try {
@@ -213,11 +230,16 @@ export default function AccountsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void ensureAutoCheckinConfig().then((message) => {
-      if (!cancelled && message) {
-        toast.error("自动签到配置加载失败", { description: message });
-      }
-    });
+    void ensureAutoCheckinConfig()
+      .then((message) => {
+        if (!cancelled && message) {
+          toast.error("自动签到配置加载失败", { description: message });
+        }
+      })
+      .finally(() => {
+        // 读取失败也按空名单处理，照常查询状态。
+        if (!cancelled) setAutoCheckinSettled(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -263,11 +285,12 @@ export default function AccountsPage() {
 
   // 当前档位账号列表变化后并行查询各账号今日签到状态
   // 国际版没有签到接口：不查询状态（后端也不发请求）。
+  // 关闭了自动签到的账号不查询，配置就绪前不发请求。
   // store 内按 TTL + 跨天失效决定是否真发请求，切回账号页直接命中缓存。
   useEffect(() => {
-    if (!visibleAccounts.length || !checkinAvailable) return;
-    void ensureCheckin(visibleAccounts.map((account) => account.id));
-  }, [visibleAccounts, checkinAvailable, ensureCheckin]);
+    if (!autoCheckinAccountIds.length) return;
+    void ensureCheckin(autoCheckinAccountIds);
+  }, [autoCheckinAccountIds, ensureCheckin]);
 
   // 当前档位账号列表变化后并行查询旅行状态；之后按 TRAVEL_REFRESH_INTERVAL_MS 周期刷新，
   // 以反映后台派发/领取循环带来的状态变化。仅主窗口可见时轮询，隐藏时暂停。
@@ -424,9 +447,10 @@ export default function AccountsPage() {
       const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
-      // 刷新该账号的今日签到状态：先失效（webui 批量缓存里还是旧值），再重查一次
-      invalidateCheckin([a.id]);
-      void ensureCheckin([a.id]);
+      // 手动签到已完成状态核验，直接使用回执，避免为已关闭自动签到的账号再触发展示查询。
+      if (res.result === "success" || res.result === "already") {
+        markCheckedIn([a.id]);
+      }
       void fetchAll({ force: true });
       // 签到成功/已签到会带来积分变动，force 刷新该账号积分
       if (res.result !== "error") {
@@ -479,11 +503,13 @@ export default function AccountsPage() {
           const already = entries.filter((e) => e.result === "already").length;
           const failed = entries.filter((e) => e.result === "error").length;
           const inactive = entries.filter((e) => e.inactive === true || e.result === "inactive").length;
+          const skipped = entries.filter((e) => e.result === "skipped" && e.reason === "auto_checkin_disabled").length;
           const parts: string[] = [];
           if (success > 0) parts.push(`${success} 个签到成功`);
           if (already > 0) parts.push(`${already} 个已签到`);
           if (inactive > 0) parts.push(`${inactive} 个未开放签到`);
           if (failed > 0) parts.push(`${failed} 个失败`);
+          if (skipped > 0) parts.push(`已忽略 ${skipped} 个关闭自动签到的账号`);
           const summary = parts.length > 0 ? parts.join("，") : "无账号需要签到";
           const counted = success + already + failed;
           if (failed > 0 && counted === failed) {
@@ -495,9 +521,13 @@ export default function AccountsPage() {
           } else {
             toast.success("签到完成", { description: summary });
           }
-          // 批量签到后重查当前档位账号的今日签到状态，无需切换页面即反映最新结果
-          invalidateCheckin(ids);
-          await ensureCheckin(ids, { force: true });
+          // 批量签到后重查今日签到状态，无需切换页面即反映最新结果。
+          // 被跳过的账号本次没发请求，状态保持原值，不重查。
+          const processedIds = entries
+            .filter((e) => e.result !== "skipped")
+            .map((e) => e.accountId);
+          invalidateCheckin(processedIds);
+          await ensureCheckin(processedIds, { force: true });
         } catch (e) {
           toast.error("批量签到失败", { description: api.asError(e) });
         }
@@ -960,6 +990,9 @@ export default function AccountsPage() {
                 onCheckin={onCheckin}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
+                autoCheckinAllowed={
+                  checkinAvailable && autoCheckinSettled ? !excludedCheckinIds.has(a.id) : undefined
+                }
                 travelStatus={autoTravelEnabled ? travelMap[a.id] : undefined}
                 rateLimits={rateLimitEnabled ? rateLimitMap[a.id] : undefined}
                 credit={creditMap[a.id]}

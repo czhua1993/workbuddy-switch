@@ -101,6 +101,8 @@ interface AccountStatusState {
   forgetAccount: (accountId: string) => void;
   /** 失效签到缓存（不传 ids 则全部失效）；保留旧值以免卡片闪空。 */
   invalidateCheckin: (accountIds?: string[]) => void;
+  /** 手动签到已完成状态核验时直接写入「今天已签到」，不必再走展示查询。 */
+  markCheckedIn: (accountIds: string[]) => void;
   invalidateTravel: (accountIds?: string[]) => void;
   invalidateRateLimits: () => void;
   /** 设置页改完配置（限额开关 / 自动签到 / 自动旅行）后调用。 */
@@ -157,7 +159,7 @@ export const useAccountStatusStore = create<AccountStatusState>((set, get) => ({
           const res = await api.getCheckinStatus(id);
           if (res.ok) {
             set((s) => ({
-              checkinMap: { ...s.checkinMap, [id]: res.todayCheckedIn },
+              checkinMap: { ...s.checkinMap, [id]: res.todayCheckedIn === true },
               checkinAtMap: { ...s.checkinAtMap, [id]: Date.now() },
             }));
             return;
@@ -396,6 +398,20 @@ export const useAccountStatusStore = create<AccountStatusState>((set, get) => ({
       const checkinAtMap = { ...s.checkinAtMap };
       for (const id of accountIds) delete checkinAtMap[id];
       return { checkinAtMap };
+    });
+  },
+
+  markCheckedIn(accountIds) {
+    if (accountIds.length === 0) return;
+    const now = Date.now();
+    set((s) => {
+      const checkinMap: Record<string, boolean> = { ...s.checkinMap };
+      const checkinAtMap: Record<string, number> = { ...s.checkinAtMap };
+      for (const id of accountIds) {
+        checkinMap[id] = true;
+        checkinAtMap[id] = now;
+      }
+      return { checkinMap, checkinAtMap };
     });
   },
 

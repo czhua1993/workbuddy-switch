@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 
 use tauri::Emitter;
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, official_usage,
-    credit_usage, credits, export_import, limits, notifications, oauth, process, rate_limit_events,
-    rate_limit_hook, refresh, rotate, session, session_slim, switch, token_stats, travel, update,
-    variant::WbVariant, vscode_ext, vscode_session, vscode_session_sync,
+    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide, credit_usage,
+    credits, export_import, limits, notifications, oauth, official_usage, process,
+    rate_limit_events, rate_limit_hook, refresh, rotate, session, session_slim, switch,
+    token_stats, travel, update, variant::WbVariant, vscode_ext, vscode_session,
+    vscode_session_sync,
 };
 
 #[derive(Serialize)]
@@ -510,7 +511,7 @@ pub async fn session_links_preview(
 #[tauri::command]
 pub async fn get_checkin_status(account_id: String) -> Result<Value, String> {
     let acc = account::find_account(&account_id).ok_or("账号不存在")?;
-    let mut status = checkin::get_checkin_status(&acc).await;
+    let mut status = checkin::get_checkin_status_for_display(&acc).await;
     // 结果行带档位，前端按当前档位过滤时无需再查账号。
     status["variant"] = json!(account::variant_of(&acc).as_str());
     Ok(status)
@@ -636,9 +637,11 @@ pub async fn checkin(account_id: String) -> Result<Value, String> {
 
 /// POST /api/checkin/all —— 全部账号立即签到（每个账号按自身档位）。
 /// `variant` 缺省为 `None`（全部档位，保持原行为）；显式传入时只处理该档位。
+/// 关闭自动签到的账号逐账号返回 skipped 原因（设置页与托盘同样遵守）。
 #[tauri::command]
 pub async fn checkin_all(variant: Option<String>) -> Value {
-    checkin::run_checkin_all(variant.as_deref().map(|raw| WbVariant::parse(Some(raw)))).await
+    let variant = variant.as_deref().map(|raw| WbVariant::parse(Some(raw)));
+    checkin::run_checkin_all(variant).await
 }
 
 /// GET /api/checkin/config —— 自动签到配置。

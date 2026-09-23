@@ -3,12 +3,13 @@
 //! 路由设计对应 Python 版 server.py 与桌面端 commands.rs。仅绑定 127.0.0.1，
 //! token 不出本机。
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 #[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::RawQuery;
+use axum::extract::{Query, RawQuery};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -18,7 +19,7 @@ use serde_json::{json, Value};
 
 use wb_switch_core::modules::{
     account, account_profile, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, codebuddy_ide,
-    config, credit_usage, credits, export_import, limits, notifications, official_usage, oauth,
+    config, credit_usage, credits, export_import, limits, notifications, oauth, official_usage,
     process, rate_limit_events, rate_limit_hook, refresh, rotate, session, switch, token_stats,
     travel, update, variant::WbVariant, vscode_ext, vscode_session, vscode_session_sync,
 };
@@ -692,8 +693,16 @@ async fn api_session_links_preview(Json(body): Json<Value>) -> Response {
 /// token 刷新（写 `accounts.json`）造成并发压力。
 const CHECKIN_STATUS_CONCURRENCY: usize = 4;
 
-/// GET /api/checkin/status —— 全部账号的签到状态（每行带 `variant`，档位取账号自身）。
-async fn api_checkin_status() -> Response {
+/// GET /api/checkin/status —— 传 accountId 时只查询该账号；缺省批量查询全部账号。
+/// 两种形式都遵守单账号自动签到开关，避免展示状态时触发已关闭账号的请求。
+async fn api_checkin_status(Query(query): Query<HashMap<String, String>>) -> Response {
+    if let Some(id) = query.get("accountId") {
+        let Some(acc) = account::find_account(id) else {
+            return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
+        };
+        let status = checkin::get_checkin_status_for_display(&acc).await;
+        return json_ok(checkin_status_item(&acc, status));
+    }
     let list = account::load_accounts();
     // 先按「查询未完成」铺底：任务恐慌/被取消时该账号仍有行，不会从列表里消失。
     let mut items: Vec<Value> = list
@@ -707,7 +716,7 @@ async fn api_checkin_status() -> Response {
         let index = next;
         next += 1;
         let acc = list[index].clone();
-        running.spawn(async move { (index, checkin::get_checkin_status(&acc).await) });
+        running.spawn(async move { (index, checkin::get_checkin_status_for_display(&acc).await) });
     }
     while let Some(joined) = running.join_next().await {
         // 恐慌/取消的任务保留铺底行；正常结果按原索引回填，顺序与账号列表一致。
@@ -718,7 +727,8 @@ async fn api_checkin_status() -> Response {
             let index = next;
             next += 1;
             let acc = list[index].clone();
-            running.spawn(async move { (index, checkin::get_checkin_status(&acc).await) });
+            running
+                .spawn(async move { (index, checkin::get_checkin_status_for_display(&acc).await) });
         }
     }
     json_ok(json!({ "accounts": items }))
@@ -1101,6 +1111,18 @@ mod tests {
         assert_eq!(item["accountId"], "account-2");
         assert_eq!(item["ok"], false);
         assert_eq!(item["error"], "status failed");
+    }
+
+    #[test]
+    fn web_checkin_status_preserves_exclusion_without_inventing_today_status() {
+        let item = checkin_status_item(
+            &json!({"id": "excluded"}),
+            json!({"ok": false, "result": "skipped", "reason": "auto_checkin_disabled"}),
+        );
+        assert_eq!(item["accountId"], "excluded");
+        assert_eq!(item["reason"], "auto_checkin_disabled");
+        assert_eq!(item["result"], "skipped");
+        assert!(item.get("todayCheckedIn").is_none());
     }
 
     #[test]

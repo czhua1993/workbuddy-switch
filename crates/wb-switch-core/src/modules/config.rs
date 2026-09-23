@@ -289,6 +289,7 @@ fn legacy_default_checkin_config() -> Value {
 fn checkin_config_with_enabled(enabled: bool) -> Value {
     json!({
         "enabled": enabled,
+        "excluded_account_ids": [],
         "checkin_start": "",
         "checkin_end": "",
         "start_hour": 6,
@@ -324,6 +325,16 @@ fn apply_checkin_config(merged: &mut Value, input: &Value) {
     };
     if let Some(enabled) = map.get("enabled").and_then(Value::as_bool) {
         merged["enabled"] = json!(enabled);
+    }
+    // 仅用稳定账号 id 排除自动签到；忽略无效项并去重，旧配置默认全部参与。
+    if let Some(ids) = map.get("excluded_account_ids").and_then(Value::as_array) {
+        let mut seen = HashSet::new();
+        let ids: Vec<&str> = ids
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| !id.trim().is_empty() && seen.insert(*id))
+            .collect();
+        merged["excluded_account_ids"] = json!(ids);
     }
     for key in [
         "start_hour",
@@ -1027,13 +1038,32 @@ pub async fn http_request_with_proxy(
                 serde_json::from_str(&text).unwrap_or_else(|_| {
                     json!({
                         "code": status.as_u16(),
-                        "message": text.chars().take(500).collect::<String>(),
+                        "message": normalize_error_body(&text),
                     })
                 })
             }
         }
         Err(e) => json!({"code": -1, "message": e.to_string()}),
     }
+}
+
+/// 非 JSON 错误响应体归一化：网关（openresty / APISIX 等）的 401/5xx 常返回
+/// 整页 HTML，原样截断会把 `<html>…` 整段塞进通知与界面卡片（issue #94）。
+/// HTML 提取 `<title>` 作为可读信息；其余保持原有的 500 字符截断。
+fn normalize_error_body(text: &str) -> String {
+    if text.trim_start().starts_with('<') {
+        let title = text
+            .split_once("<title>")
+            .and_then(|(_, rest)| rest.split_once("</title>"))
+            .map(|(title, _)| title.trim())
+            .unwrap_or_default();
+        return if title.is_empty() {
+            "服务端返回 HTML 错误页（无标题）".to_string()
+        } else {
+            format!("服务端返回 HTML 错误页：{title}")
+        };
+    }
+    text.chars().take(500).collect::<String>()
 }
 
 /// 通用 HTTP 请求，返回原始响应（状态码 + 响应头 + 响应体），可选是否跟随重定向。
@@ -1108,6 +1138,30 @@ pub async fn http_request_raw(
 mod tests {
     use super::*;
 
+    /// 回归 issue #94：网关 401 返回的整页 HTML 要归一化为可读信息，
+    /// 不能把 `<html>…` 原样塞进通知与界面卡片。
+    #[test]
+    fn normalize_error_body_extracts_html_title() {
+        let html = "<html>\n<head><title>401 Authorization Required</title></head>\n\
+                    <body>\n<center><h1>401 Authorization Required</h1></center>\n\
+                    <hr><center>openresty</center>\n</body>\n</html>\n";
+        assert_eq!(
+            normalize_error_body(html),
+            "服务端返回 HTML 错误页：401 Authorization Required"
+        );
+
+        assert_eq!(
+            normalize_error_body("<!DOCTYPE html><html><body>boom</body></html>"),
+            "服务端返回 HTML 错误页（无标题）"
+        );
+
+        // 非 HTML 错误体保持原有截断行为。
+        let plain = "plain gateway error";
+        assert_eq!(normalize_error_body(plain), plain);
+        let long = "x".repeat(600);
+        assert_eq!(normalize_error_body(&long).chars().count(), 500);
+    }
+
     fn local_timestamp_ms(year: i32, month: u32, day: u32, hour: u32) -> i64 {
         Local
             .with_ymd_and_hms(year, month, day, hour, 0, 0)
@@ -1120,6 +1174,7 @@ mod tests {
     fn auto_checkin_defaults_disabled_and_preserves_legacy_fields() {
         let cfg = default_checkin_config();
         assert_eq!(cfg.get("enabled").and_then(Value::as_bool), Some(false));
+        assert_eq!(cfg["excluded_account_ids"], json!([]));
         assert_eq!(cfg.get("start_hour").and_then(Value::as_i64), Some(6));
         assert_eq!(cfg.get("end_hour").and_then(Value::as_i64), Some(12));
 
@@ -1130,6 +1185,64 @@ mod tests {
             legacy.get("lazy_refresh_hours").and_then(Value::as_i64),
             Some(24)
         );
+    }
+
+    #[test]
+    fn auto_checkin_exclusions_survive_config_roundtrip_and_global_toggle() {
+        let cfg = merge_checkin_config(&json!({
+            "enabled": true,
+            "excluded_account_ids": ["account-b", "account-a", "account-b", "", "  ", null, 42],
+            "checkin_start": "9:5",
+            "checkin_end": "12:00",
+            "keepalive_days": 7
+        }));
+        assert_eq!(
+            cfg["excluded_account_ids"],
+            json!(["account-b", "account-a"])
+        );
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        let mut reloaded: Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(merge_checkin_config(&reloaded), cfg);
+        reloaded["enabled"] = json!(false);
+        let disabled = merge_checkin_config(&reloaded);
+        assert_eq!(
+            disabled["excluded_account_ids"],
+            cfg["excluded_account_ids"]
+        );
+        assert_eq!(disabled["checkin_start"], "09:05");
+        assert_eq!(disabled["keepalive_days"], 7);
+    }
+
+    #[test]
+    fn auto_checkin_legacy_or_invalid_exclusions_default_to_empty() {
+        assert_eq!(
+            merge_checkin_config(&json!({}))["excluded_account_ids"],
+            json!([])
+        );
+        for invalid in [
+            json!(null),
+            json!(true),
+            json!("account-a"),
+            json!({"id": "account-a"}),
+        ] {
+            assert_eq!(
+                merge_checkin_config(&json!({"excluded_account_ids": invalid}))
+                    ["excluded_account_ids"],
+                json!([])
+            );
+        }
+    }
+
+    #[test]
+    fn auto_checkin_exclusions_survive_usage_trace_defaults() {
+        let input = json!({"excluded_account_ids": ["account-a", "account-a", null]});
+        for existing_install in [false, true] {
+            let resolved = resolve_checkin_config(Some(&input), existing_install);
+            assert_eq!(resolved["enabled"], json!(existing_install));
+            assert_eq!(resolved["excluded_account_ids"], json!(["account-a"]));
+            // 保存已解析配置后，新老安装均保留开关状态和账号排除列表。
+            assert_eq!(merge_checkin_config(&resolved), resolved);
+        }
     }
 
     #[test]
