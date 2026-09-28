@@ -7,9 +7,7 @@ import {
   ExternalLink,
   FileDown,
   FileUp,
-  CalendarCheck,
   Loader2,
-  Plane,
   QrCode,
   RefreshCw,
   Rows3,
@@ -19,11 +17,14 @@ import {
 import { AccountCard } from "@/components/account-card";
 import { CleanupSessionsDialog } from "@/components/cleanup-sessions-dialog";
 import { DedupSessionsDialog } from "@/components/dedup-sessions-dialog";
+import { JetbrainsSwitchDialog } from "@/components/jetbrains-switch-dialog";
+import { CodebuddyIdeSwitchAccountDialog } from "@/components/codebuddy-ide-switch-account-dialog";
 import { DemoAction } from "@/components/demo-action";
 import {
   CodeBuddyAiIdeMark,
   CodeBuddyCnIdeMark,
   CodeBuddyMark,
+  JetbrainsMark,
   VscodeExtMark,
   WorkBuddyAiMark,
   WorkBuddyMark,
@@ -31,6 +32,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -60,7 +62,8 @@ import {
   variantSupportsTravel,
   variantUsesIntlCodebuddyIde,
 } from "@/lib/variant";
-import type { AccountMeta, AppStatus, CreditExpiry } from "@/lib/types";
+import { useSupportedTools } from "@/lib/supported-tools";
+import type { AccountMeta, AppStatus, CreditExpiry, JetbrainsStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useAccountsStore } from "@/stores/accounts";
 import { useAccountStatusStore } from "@/stores/account-status";
@@ -127,8 +130,6 @@ export default function AccountsPage() {
     ensureCredits,
     refreshCredits,
   } = useAccountsStore();
-  // 签到 / 旅行 / 限额 / 目标应用状态都放在 store 里带缓存：切 Tab 重新挂载直接命中，
-  // 不再每次进来重拉一遍（详见 stores/account-status.ts）。
   const {
     checkinMap,
     travelMap,
@@ -149,24 +150,27 @@ export default function AccountsPage() {
     setAutoCheckinConfig,
     setAutoTravelConfig,
     forgetAccount,
-    invalidateCheckin,
     markCheckedIn,
   } = useAccountStatusStore();
   const [oauthOpen, setOauthOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [switchAccount, setSwitchAccount] = useState<AccountMeta | null>(null);
-  const [cleanupAccount, setCleanupAccount] = useState<AccountMeta | null>(null);
-  const [dedupAccount, setDedupAccount] = useState<AccountMeta | null>(null);
+  const [cleanupSessionsAccount, setCleanupSessionsAccount] = useState<AccountMeta | null>(null);
+  const [dedupSessionsAccount, setDedupSessionsAccount] = useState<AccountMeta | null>(null);
   const [importing, setImporting] = useState(false);
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
   const [autoTravelSaving, setAutoTravelSaving] = useState(false);
-  /** 自动签到配置是否已读取完毕（成功或失败）：区分「尚未读到」与「读取失败」。 */
+  /** 配置是否已读取完毕（成功或失败）：区分「尚未读到」与「读取失败」。 */
   const [autoCheckinSettled, setAutoCheckinSettled] = useState(false);
   const [codebuddyCliSwitchingId, setCodebuddyCliSwitchingId] = useState<string | null>(null);
-  const [codebuddyCnIdeSwitchingId, setCodebuddyCnIdeSwitchingId] = useState<string | null>(null);
+  /** CodeBuddy IDE 切换弹窗目标（null=关闭）；切换与可选会话复制/同步在弹窗内完成（国内版 / 国际版共用）。 */
+  const [codebuddyIdeSwitchAccount, setCodebuddyIdeSwitchAccount] = useState<AccountMeta | null>(null);
   /** VS Code 扩展切换弹窗目标（null=关闭）；切换与可选会话复制在弹窗内完成。 */
   const [vscodeSwitchAccount, setVscodeSwitchAccount] = useState<AccountMeta | null>(null);
+  const [jetbrains, setJetbrains] = useState<JetbrainsStatus | null>(null);
+  /** JetBrains 切换弹窗目标（null=关闭）；切换与目标 IDE 选择在弹窗内完成。 */
+  const [jetbrainsSwitchTarget, setJetbrainsSwitchTarget] = useState<AccountMeta | null>(null);
   const [installingCodebuddyCli, setInstallingCodebuddyCli] = useState(false);
   /** 刷新按钮触发的批量签到进行中 */
   const [checkinAllRunning, setCheckinAllRunning] = useState(false);
@@ -188,9 +192,7 @@ export default function AccountsPage() {
   const autoTravelEnabled = travelAvailable && autoTravelConfig?.enabled === true;
   const autoCheckinEnabled = autoCheckinConfig?.enabled ?? false;
   /** 刷新按钮文案：国际版没有签到接口，只刷新积分。 */
-  const refreshCreditsLabel = checkinAvailable
-    ? "刷新全部账号积分并签到（忽略已关闭自动签到的账号）"
-    : "刷新全部账号积分";
+  const refreshCreditsLabel = checkinAvailable ? "刷新全部账号积分并签到（忽略已关闭自动签到的账号）" : "刷新全部账号积分";
   /** 关闭自动签到的账号 id（配置未读到/读取失败 = 空名单）。 */
   const excludedCheckinIds = useMemo(
     () => new Set(autoCheckinConfig?.excluded_account_ids ?? []),
@@ -212,6 +214,12 @@ export default function AccountsPage() {
     }
   });
 
+  /**
+   * 支持工具开关（设置页）：关闭的端不渲染入口、不轮询状态。
+   * 缺省 = 现有四端开、JetBrains 关（与 `src/lib/supported-tools.ts` 的默认值一致）。
+   */
+  const enabledTools = useSupportedTools();
+
   function toggleCompact() {
     setCompact((value) => {
       const next = !value;
@@ -230,32 +238,13 @@ export default function AccountsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void ensureAutoCheckinConfig()
-      .then((message) => {
-        if (!cancelled && message) {
-          toast.error("自动签到配置加载失败", { description: message });
-        }
-      })
-      .finally(() => {
-        // 读取失败也按空名单处理，照常查询状态。
-        if (!cancelled) setAutoCheckinSettled(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [ensureAutoCheckinConfig]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void ensureAutoTravelConfig().then((message) => {
-      if (!cancelled && message) {
-        toast.error("自动旅行配置加载失败", { description: message });
-      }
+    void ensureAutoCheckinConfig().finally(() => {
+      if (!cancelled) setAutoCheckinSettled(true);
     });
     return () => {
       cancelled = true;
     };
-  }, [ensureAutoTravelConfig]);
+  }, [ensureAutoCheckinConfig]);
 
   /**
    * 首次启动自动导入本机账号（本会话只尝试一次，无本机账号时静默）。
@@ -267,35 +256,62 @@ export default function AccountsPage() {
     if (autoImportTried.current || loading || visibleAccounts.length > 0) return;
     autoImportTried.current = true;
     void importLocal()
-      .then(() => void fetchAll({ force: true }))
+      .then(() => void fetchAll())
       .catch(() => {
         /* 本机无 WorkBuddy 登录态时静默，不打扰用户 */
       });
   }, [variant, visibleAccounts.length, loading, importLocal, fetchAll]);
 
-  // 挂载时刷新目标应用状态（CodeBuddy CLI / IDE / VS Code 扩展）：store 内按 TTL +
-  // 钥匙串探测间隔决定是否真发请求，切回账号页不会重新探测一遍。
-  // 切档位要读的是另一套应用（国际版读 CodeBuddy.app 钥匙串），必须 force。
-  const lastStatusVariantRef = useRef(variant);
-  useEffect(() => {
-    const force = lastStatusVariantRef.current !== variant;
-    lastStatusVariantRef.current = variant;
-    void ensureAppStatus(variant, force ? { force: true } : undefined);
-  }, [accounts.length, variant, ensureAppStatus]);
+  async function refreshJetbrainsStatus() {
+    try {
+      setJetbrains(await api.getJetbrainsStatus());
+    } catch {
+      setJetbrains(null);
+    }
+  }
 
-  // 当前档位账号列表变化后并行查询各账号今日签到状态
-  // 国际版没有签到接口：不查询状态（后端也不发请求）。
-  // 关闭了自动签到的账号不查询，配置就绪前不发请求。
-  // store 内按 TTL + 跨天失效决定是否真发请求，切回账号页直接命中缓存。
+  useEffect(() => {
+    if (enabledTools.codebuddyCli || enabledTools.codebuddyIde || enabledTools.vscodeExt) {
+      void ensureAppStatus(variant);
+    }
+  }, [
+    accounts.length,
+    variant,
+    enabledTools.codebuddyCli,
+    enabledTools.codebuddyIde,
+    enabledTools.vscodeExt,
+    ensureAppStatus,
+  ]);
+
+  useEffect(() => {
+    if (!enabledTools.jetbrains) return;
+    let cancelled = false;
+    void (async () => {
+      if (!api.isDemoMode()) {
+        try {
+          await api.detectJetbrainsAccount();
+        } catch {
+          /* JetBrains 插件未登录时静默 */
+        }
+      }
+      if (!cancelled) await refreshJetbrainsStatus();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts.length, variant, enabledTools.jetbrains]);
+
+  // 配置就绪后查询未关闭自动签到的账号；国际版没有签到接口，不查询状态。
   useEffect(() => {
     if (!autoCheckinAccountIds.length) return;
     void ensureCheckin(autoCheckinAccountIds);
   }, [autoCheckinAccountIds, ensureCheckin]);
 
-  // 当前档位账号列表变化后并行查询旅行状态；之后按 TRAVEL_REFRESH_INTERVAL_MS 周期刷新，
-  // 以反映后台派发/领取循环带来的状态变化。仅主窗口可见时轮询，隐藏时暂停。
-  // 成长中心仅国内版开放，国际版不发请求也不展示标签。
-  // 轮询回调走 store 的 ensure：挂载时的立即执行也不会重复打已缓存的请求。
+  useEffect(() => {
+    if (!travelAvailable) return;
+    void ensureAutoTravelConfig();
+  }, [travelAvailable, ensureAutoTravelConfig]);
+
   const travelAccountIds = useMemo(
     () => visibleAccounts.map((account) => account.id),
     [visibleAccounts],
@@ -307,41 +323,28 @@ export default function AccountsPage() {
   );
 
   /**
-   * 模型限额台账（后端合并两条通路）：拉取、5 分钟节流与「账号 id -> 受限模型」转换都在
-   * store 的 `ensureRateLimits` 里，节流不再随组件卸载丢失。
-   *
-   * 容错：老版本后端没有该命令、或扫描失败时按「无受限模型」处理（清空映射），
-   * 不弹错误、不影响账号页其它功能。
+   * 模型限额台账由共享 store 缓存；页面只负责可见时轮询和响应后端实时事件。
    */
-  const loadRateLimitsRef = useRef(ensureRateLimits);
-  loadRateLimitsRef.current = ensureRateLimits;
+  useEffect(() => {
+    void ensureRateLimitConfig();
+  }, [ensureRateLimitConfig]);
 
-  // 兜底轮询：页面可见且距上次扫描 ≥ 5 分钟时拉一次（IDE 日志扫描在后端按同一间隔节流）。
-  // 图标何时消失由卡片本地按 `resetAt` 每秒判定（跨过官方重置时刻自动消失），不依赖这里的轮询。
   useVisibleInterval(
-    () => void loadRateLimitsRef.current(),
+    () => void ensureRateLimits(),
     RATE_LIMIT_REFRESH_INTERVAL_MS,
     rateLimitEnabled === true,
   );
 
-  // 后端入账 hook 事件（CLI / WorkBuddy 的 429 当轮）后推送 → 立即拉取，秒级更新。
-  // 这一路不看节流：新状态已经在后端，前端只做拉取。
   useEffect(() => {
     if (api.isWebui()) return;
     let unlisten: (() => void) | undefined;
     void listen("rate-limits-updated", () => {
-      void loadRateLimitsRef.current({ force: true });
+      void ensureRateLimits({ force: true });
     }).then((fn) => {
       unlisten = fn;
     });
     return () => unlisten?.();
-  }, []);
-
-  // 「限额监听」开关（设置页）：关闭后不再发起扫描；开关配置在 store 里带 TTL 缓存，
-  // 读到开启时会顺带补一轮台账。
-  useEffect(() => {
-    void ensureRateLimitConfig();
-  }, [ensureRateLimitConfig]);
+  }, [ensureRateLimits]);
 
   // 只给尚未缓存的账号拉积分；切回首页不重复请求。点「刷新积分」才强制更新。
   useEffect(() => {
@@ -361,48 +364,6 @@ export default function AccountsPage() {
     }
   }
 
-  async function onAutoCheckinChange(enabled: boolean) {
-    if (!autoCheckinConfig || autoCheckinSaving) return;
-    const previous = autoCheckinConfig;
-    const next = { ...previous, enabled };
-    setAutoCheckinConfig(next);
-    setAutoCheckinSaving(true);
-    try {
-      setAutoCheckinConfig(await api.saveAutoCheckinConfig(next));
-    } catch (e) {
-      setAutoCheckinConfig(previous);
-      toast.error("自动签到设置保存失败", { description: api.asError(e) });
-    } finally {
-      setAutoCheckinSaving(false);
-    }
-  }
-
-  async function onAutoTravelChange(enabled: boolean) {
-    if (!autoTravelConfig || autoTravelSaving) return;
-    const previous = autoTravelConfig;
-    const next = { ...previous, enabled };
-    setAutoTravelConfig(next);
-    setAutoTravelSaving(true);
-    try {
-      setAutoTravelConfig(await api.saveAutoTravelConfig(next));
-      if (enabled) {
-        toast.success("自动旅行已开启", { description: "正在按官方状态派发或领取" });
-        // 后台派发需要一点时间，稍后强制重拉一次（跳过 TTL）
-        window.setTimeout(() => {
-          void ensureTravel(
-            visibleAccounts.map((account) => account.id),
-            { force: true },
-          );
-        }, 2500);
-      }
-    } catch (e) {
-      setAutoTravelConfig(previous);
-      toast.error("自动旅行设置保存失败", { description: api.asError(e) });
-    } finally {
-      setAutoTravelSaving(false);
-    }
-  }
-
   /** 导出完成提示（含安全提醒）。 */
   function onExported(count: number) {
     const text = `已导出 ${count} 个账号。文件含登录 token，等同密码，请勿上传网盘或发送给他人。`;
@@ -411,10 +372,44 @@ export default function AccountsPage() {
 
   /** 导入完成提示：计数 + token 可能过期提醒，并刷新列表。 */
   function onImported(result: { imported: number; skipped: number; overwritten: number }) {
-    void fetchAll({ force: true });
+    void fetchAll();
     const overwriteText = result.overwritten > 0 ? `（覆盖 ${result.overwritten} 个）` : "";
     const text = `已导入 ${result.imported} 个${overwriteText}，跳过 ${result.skipped} 个。token 可能已过期，切换后可能需要重新登录。`;
     toast.success("导入成功", { description: text });
+  }
+
+  async function onToggleAutoCheckin(enabled: boolean) {
+    const previous = autoCheckinConfig;
+    if (!previous || autoCheckinSaving) return;
+    setAutoCheckinSaving(true);
+    setAutoCheckinConfig({ ...previous, enabled });
+    try {
+      const saved = await api.saveAutoCheckinConfig({ ...previous, enabled });
+      setAutoCheckinConfig(saved);
+      toast.success(enabled ? "自动签到已开启" : "自动签到已关闭");
+    } catch (error) {
+      setAutoCheckinConfig(previous);
+      toast.error("自动签到设置保存失败", { description: api.asError(error) });
+    } finally {
+      setAutoCheckinSaving(false);
+    }
+  }
+
+  async function onToggleAutoTravel(enabled: boolean) {
+    const previous = autoTravelConfig;
+    if (!previous || autoTravelSaving) return;
+    setAutoTravelSaving(true);
+    setAutoTravelConfig({ ...previous, enabled });
+    try {
+      const saved = await api.saveAutoTravelConfig({ ...previous, enabled });
+      setAutoTravelConfig(saved);
+      toast.success(enabled ? "自动旅行已开启" : "自动旅行已关闭");
+    } catch (error) {
+      setAutoTravelConfig(previous);
+      toast.error("自动旅行设置保存失败", { description: api.asError(error) });
+    } finally {
+      setAutoTravelSaving(false);
+    }
   }
 
   async function onDelete(a: AccountMeta) {
@@ -447,17 +442,13 @@ export default function AccountsPage() {
       const description = `${a.nickname || a.email || a.id}${res.error ? `：${res.error}` : ""}`;
       if (res.result === "error") toast.error(label, { description });
       else toast.success(label, { description });
-      // 手动签到已完成状态核验，直接使用回执，避免为已关闭自动签到的账号再触发展示查询。
+      // 手动签到已完成状态核验，直接使用回执，避免为已关闭账号再触发展示查询。
       if (res.result === "success" || res.result === "already") {
         markCheckedIn([a.id]);
       }
-      void fetchAll({ force: true });
+      void fetchAll();
       // 签到成功/已签到会带来积分变动，force 刷新该账号积分
-      if (res.result !== "error") {
-        void refreshCredits([a.id]);
-        // 附带刷新账号资料（昵称可能变更），随后重拉列表反映最新值
-        void api.refreshAccountInfo([a.id]).then(() => void fetchAll({ force: true }));
-      }
+      if (res.result !== "error") void refreshCredits([a.id]);
     } catch (e) {
       toast.error("签到失败", { description: api.asError(e) });
     }
@@ -472,33 +463,25 @@ export default function AccountsPage() {
       } else {
         toast.success("Token 已刷新", { description: label });
       }
-      void fetchAll({ force: true });
+      void fetchAll();
     } catch (e) {
       toast.error("Token 刷新失败", { description: api.asError(e) });
     }
   }
 
-  /**
-   * 当前档位的批量签到：后端一次调用完成（保留并发保护），只处理支持签到的
-   * 账号；国际版没有签到接口，不参与批量签到。
-   */
-  async function runBatchCheckin() {
-    const res = await api.checkinAll(variant);
-    return res.accounts ?? [];
-  }
-
-  /**
-   * 刷新按钮：先跑一轮当前档位的批量签到并重查今日签到状态，再强制刷新全部积分。
-   * 国际版没有签到接口：跳过整块签到逻辑，只刷新积分。
-   */
+  /** 刷新附带的签到遵守账号开关；所有账号照常刷新积分，提示实际忽略数量。 */
   async function onRefreshCredits() {
     if (!visibleAccounts.length || refreshingCredits || checkinAllRunning) return;
     setCheckinAllRunning(true);
     const ids = visibleAccounts.map((account) => account.id);
+    let summary = "";
+    let notify = toast.success;
+    let title = "积分到期情况已刷新";
     try {
       if (checkinAvailable) {
         try {
-          const entries = await runBatchCheckin();
+          const res = await api.checkinAll(variant);
+          const entries = res.accounts ?? [];
           const success = entries.filter((e) => e.result === "success").length;
           const already = entries.filter((e) => e.result === "already").length;
           const failed = entries.filter((e) => e.result === "error").length;
@@ -510,38 +493,36 @@ export default function AccountsPage() {
           if (inactive > 0) parts.push(`${inactive} 个未开放签到`);
           if (failed > 0) parts.push(`${failed} 个失败`);
           if (skipped > 0) parts.push(`已忽略 ${skipped} 个关闭自动签到的账号`);
-          const summary = parts.length > 0 ? parts.join("，") : "无账号需要签到";
-          const counted = success + already + failed;
-          if (failed > 0 && counted === failed) {
-            toast.error("签到失败", { description: summary });
-          } else if (counted === 0 && inactive > 0) {
-            // 全部是 inactive（官方未开放签到活动）：既不算成功也不算失败，
-            // 不得呈现为绿色成功（design D8）。
-            toast.info("签到未开放", { description: summary });
-          } else {
-            toast.success("签到完成", { description: summary });
+          summary = res.status === "skipped" && res.reason === "already_running"
+            ? "签到任务正在进行，本次仅刷新积分"
+            : parts.length > 0 ? parts.join("，") : "无账号需要签到";
+          const allFailed = entries.length > 0 && failed === entries.length;
+          const allSkippedOrInactive =
+            res.status === "skipped" ||
+            entries.length === 0 ||
+            (success === 0 && already === 0 && failed === 0);
+          if (allFailed) {
+            // 全部失败：没有成功、已签、未开放或忽略的账号。
+            notify = toast.error;
+            title = "积分已刷新，签到出现错误";
+          } else if (allSkippedOrInactive) {
+            // 全部被跳过或官方未开放签到活动：既不算成功也不算失败，不呈现为绿色成功。
+            notify = toast.info;
           }
-          // 批量签到后重查今日签到状态，无需切换页面即反映最新结果。
-          // 被跳过的账号本次没发请求，状态保持原值，不重查。
-          const processedIds = entries
-            .filter((e) => e.result !== "skipped")
-            .map((e) => e.accountId);
-          invalidateCheckin(processedIds);
-          await ensureCheckin(processedIds, { force: true });
+          // 只重查实际处理过的账号状态；被跳过的账号本次未发请求，状态保持未知。
+          await ensureCheckin(
+            entries.filter((entry) => entry.result !== "skipped").map((entry) => entry.accountId),
+            { force: true },
+          );
         } catch (e) {
-          toast.error("批量签到失败", { description: api.asError(e) });
+          notify = toast.error;
+          title = "积分已刷新，签到出现错误";
+          summary = api.asError(e);
         }
       }
       await refreshCredits(ids);
-      // 附带刷新账号资料（昵称 / uin / type 等），并强制重拉列表反映最新值。
-      try {
-        await api.refreshAccountInfo(ids);
-      } catch {
-        /* 资料刷新失败不影响积分结果 */
-      }
-      if (travelAvailable) await ensureTravel(ids, { force: true });
-      void fetchAll({ force: true });
-      toast.success("积分到期情况已刷新");
+      if (autoTravelEnabled) await ensureTravel(ids, { force: true });
+      notify(title, { description: summary || undefined });
     } finally {
       setCheckinAllRunning(false);
     }
@@ -579,28 +560,10 @@ export default function AccountsPage() {
   }
 
   async function onSwitchCodebuddyCnIde(account: AccountMeta) {
-    if (codebuddyCnIdeSwitchingId !== null) return;
-    setCodebuddyCnIdeSwitchingId(account.id);
-    const toastId = toast.loading("正在切换 CodeBuddy IDE…", {
-      description: "将注入凭证并重启 CodeBuddy IDE",
-    });
-    try {
-      const result = variantUsesIntlCodebuddyIde(variant)
-        ? await api.switchCodebuddyIdeAccount(account.id, true)
-        : await api.switchCodebuddyCnIdeAccount(account.id, true);
-      await ensureAppStatus(variant, { force: true });
-      toast.success("CodeBuddy IDE 已切换", {
-        id: toastId,
-        description: result.message || result.account,
-      });
-    } catch (error) {
-      toast.error("CodeBuddy IDE 切换失败", {
-        id: toastId,
-        description: api.asError(error),
-      });
-    } finally {
-      setCodebuddyCnIdeSwitchingId(null);
-    }
+    if (codebuddyIdeSwitchAccount !== null) return;
+    // 国内版与国际版共用同一弹窗（关联会话 / 复制会话两个 tab），只有数据源与切换接口按档位分流；
+    // 弹窗本身承担确认职责（不勾选时行为与一键切换一致），不再另设轻量确认框。
+    setCodebuddyIdeSwitchAccount(account);
   }
 
   async function onInstallCodebuddyCli() {
@@ -667,6 +630,10 @@ export default function AccountsPage() {
   const vscodeExtCurrentName = vscodeExt?.installed
     ? vscodeExt.activeAccountName || "未检测到"
     : "未接入";
+  const jetbrainsCurrentAccountId = jetbrains?.activeAccountId;
+  const jetbrainsCurrentName = jetbrains?.installed
+    ? jetbrains.activeAccountName || "未检测到"
+    : "未接入";
   const codebuddyUsesSettingsEnv = codebuddyCli?.authMode === "settings-env";
   return (
     <div className="mx-auto w-full max-w-[1180px] px-6 py-8 sm:px-8 sm:py-9">
@@ -690,6 +657,7 @@ export default function AccountsPage() {
           </div>
           <div className="flex shrink-0 items-center gap-4 pt-1">
             <div className="flex items-center gap-2.5">
+{enabledTools.workbuddy && (
               <span className="group relative inline-flex cursor-default">
                 <span
                   className={
@@ -704,6 +672,8 @@ export default function AccountsPage() {
                   {appName}：{status?.running ? "运行中" : "未运行"} · 当前账号：{workbuddyCurrentName}
                 </span>
               </span>
+            )}
+{enabledTools.codebuddyIde && (
               <span className="group relative inline-flex cursor-default">
                 <span
                   className={
@@ -722,6 +692,8 @@ export default function AccountsPage() {
                   {variantCodebuddyIdeName(variant)}：{codebuddyCnIde?.installed ? (codebuddyCnIde.running ? "运行中" : "已接入") : "未接入"} · 当前账号：{cnIdeCurrentName}
                 </span>
               </span>
+            )}
+{enabledTools.vscodeExt && (
               <span className="group relative inline-flex cursor-default">
                 <span
                   className={
@@ -736,6 +708,24 @@ export default function AccountsPage() {
                   VS Code CodeBuddy 插件：{!vscodeExt?.installed ? "未检测到 VS Code" : !vscodeExt.extensionInstalled ? "未安装插件" : vscodeExt.running ? "运行中" : "已接入"} · 当前账号：{vscodeExtCurrentName}
                 </span>
               </span>
+            )}
+{enabledTools.jetbrains && (
+              <span className="group relative inline-flex cursor-default">
+                <span
+                  className={
+                    jetbrains?.installed && jetbrains?.pluginInstalled
+                      ? "inline-flex rounded-[22%] bg-primary p-[2px] shadow-sm shadow-primary/40"
+                      : "inline-flex rounded-[22%] bg-muted-foreground/30 p-[2px]"
+                  }
+                >
+                  <JetbrainsMark size={28} />
+                </span>
+                <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
+                  JetBrains IDE 插件：{!jetbrains?.installed ? "未检测到 JetBrains IDE" : !jetbrains.pluginInstalled ? "未安装插件" : jetbrains.running ? "运行中" : "已接入"} · 当前账号：{jetbrainsCurrentName}
+                </span>
+              </span>
+            )}
+{enabledTools.codebuddyCli && (
               <span className="group relative inline-flex cursor-default">
                 <span
                   className={
@@ -750,6 +740,7 @@ export default function AccountsPage() {
                   CodeBuddy CLI：{codebuddyCli?.migrationRequired ? "需升级" : codebuddyCli?.configured ? "已接入" : "未接入"} · 当前账号：{codebuddyCurrentName}
                 </span>
               </span>
+            )}
             </div>
           </div>
         </div>
@@ -807,7 +798,8 @@ export default function AccountsPage() {
         </Alert>
       )}
 
-      {codebuddyCli &&
+      {enabledTools.codebuddyCli &&
+        codebuddyCli &&
         (!codebuddyCli.configured ||
           (!codebuddyUsesSettingsEnv && !codebuddyCli.helperSupportsAccountIds) ||
           codebuddyCli.migrationRequired ||
@@ -862,63 +854,32 @@ export default function AccountsPage() {
           </div>
           <TooltipProvider delayDuration={400}>
             <div className="ml-auto flex items-center gap-1">
-              {/* 自动签到仅国内版开放，国际版隐藏入口 */}
-              {checkinAvailable && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={cn("size-9 rounded-lg", autoCheckinEnabled && "bg-accent")}
-                          disabled={!autoCheckinConfig || autoCheckinSaving}
-                          onClick={() => void onAutoCheckinChange(!autoCheckinEnabled)}
-                          aria-pressed={autoCheckinEnabled}
-                          aria-label={autoCheckinEnabled ? "自动签到已开启" : "自动签到已关闭"}
-                          aria-busy={autoCheckinSaving}
-                        >
-                          {autoCheckinSaving
-                            ? <Loader2 className={cn("animate-spin", autoCheckinEnabled && "text-brand")} />
-                            : <CalendarCheck className={cn(autoCheckinEnabled && "text-brand")} />}
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {api.isDemoMode() ? "演示模式下不可操作" : `自动签到：${autoCheckinEnabled ? "已开启" : "已关闭"}`}
-                  </TooltipContent>
-                </Tooltip>
+              {checkinAvailable && autoCheckinConfig && (
+                <div className="flex h-9 items-center gap-2 px-2 text-xs text-muted-foreground">
+                  <span>自动签到</span>
+                  <DemoAction>
+                    <Switch
+                      checked={autoCheckinEnabled}
+                      disabled={autoCheckinSaving}
+                      onCheckedChange={(enabled) => void onToggleAutoCheckin(enabled)}
+                      aria-label="启用自动签到"
+                    />
+                  </DemoAction>
+                </div>
               )}
-              {/* 成长中心（派猫猫旅行）仅国内版开放，国际版隐藏入口 */}
-              {travelAvailable && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={cn("size-9 rounded-lg", autoTravelEnabled && "bg-accent")}
-                          disabled={!autoTravelConfig || autoTravelSaving}
-                          onClick={() => void onAutoTravelChange(!autoTravelEnabled)}
-                          aria-pressed={autoTravelEnabled}
-                          aria-label={autoTravelEnabled ? "自动旅行已开启" : "自动旅行已关闭"}
-                          aria-busy={autoTravelSaving}
-                        >
-                          {autoTravelSaving
-                            ? <Loader2 className={cn("animate-spin", autoTravelEnabled && "text-brand")} />
-                            : <Plane className={cn(autoTravelEnabled && "text-brand")} />}
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {api.isDemoMode() ? "演示模式下不可操作" : `自动旅行：${autoTravelEnabled ? "已开启" : "已关闭"}`}
-                  </TooltipContent>
-                </Tooltip>
+              {travelAvailable && autoTravelConfig && (
+                <div className="flex h-9 items-center gap-2 px-2 text-xs text-muted-foreground">
+                  <span>自动旅行</span>
+                  <DemoAction>
+                    <Switch
+                      checked={autoTravelConfig.enabled}
+                      disabled={autoTravelSaving}
+                      onCheckedChange={(enabled) => void onToggleAutoTravel(enabled)}
+                      aria-label="启用自动旅行"
+                    />
+                  </DemoAction>
+                </div>
               )}
-              {/* 左侧开关都隐藏时（如国际版）不画悬空分隔线 */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -985,37 +946,41 @@ export default function AccountsPage() {
                 compact={compact}
                 onDelete={onDelete}
                 onSwitch={setSwitchAccount}
-                onCleanupSessions={setCleanupAccount}
-                onDedupSessions={setDedupAccount}
-                onCheckin={onCheckin}
+                onCleanupSessions={setCleanupSessionsAccount}
+                onDedupSessions={setDedupSessionsAccount}
+                onCheckin={checkinAvailable ? onCheckin : undefined}
                 onRefresh={onRefresh}
                 todayCheckedIn={checkinMap[a.id]}
-                autoCheckinAllowed={
-                  checkinAvailable && autoCheckinSettled ? !excludedCheckinIds.has(a.id) : undefined
-                }
+                autoCheckinAllowed={checkinAvailable && autoCheckinSettled ? !excludedCheckinIds.has(a.id) : undefined}
                 travelStatus={autoTravelEnabled ? travelMap[a.id] : undefined}
                 rateLimits={rateLimitEnabled ? rateLimitMap[a.id] : undefined}
                 credit={creditMap[a.id]}
                 creditLoading={creditLoadingMap[a.id]}
                 creditUpdatedAt={creditUpdatedAtMap[a.id]}
                 creditPriority={a.id === priorityAccountId}
-                workbuddyActive={isWorkbuddyCurrent(a, current)}
+                workbuddyActive={enabledTools.workbuddy && isWorkbuddyCurrent(a, current)}
                 codebuddyCliConfigured={codebuddyCli?.configured && !codebuddyCli.migrationRequired && !codebuddyCli.syncPending}
-                codebuddyCliActive={a.id === cliCurrentAccountId}
+                codebuddyCliActive={enabledTools.codebuddyCli && a.id === cliCurrentAccountId}
                 codebuddyCliBusy={codebuddyCliSwitchingId !== null}
                 onSwitchCodebuddyCli={onSwitchCodebuddyCli}
                 codebuddyCliLoading={codebuddyCliSwitchingId === a.id}
                 codebuddyCnIdeAvailable={Boolean(codebuddyCnIde?.installed)}
-                codebuddyCnIdeActive={a.id === cnIdeCurrentAccountId}
-                codebuddyCnIdeBusy={codebuddyCnIdeSwitchingId !== null}
-                codebuddyCnIdeLoading={codebuddyCnIdeSwitchingId === a.id}
+                codebuddyCnIdeActive={enabledTools.codebuddyIde && a.id === cnIdeCurrentAccountId}
+                codebuddyCnIdeBusy={codebuddyIdeSwitchAccount !== null}
                 onSwitchCodebuddyCnIde={onSwitchCodebuddyCnIde}
                 vscodeExtInstalled={Boolean(vscodeExt?.installed)}
                 vscodeExtExtensionInstalled={Boolean(vscodeExt?.extensionInstalled)}
                 vscodeExtAvailable={Boolean(vscodeExt?.installed && vscodeExt?.extensionInstalled)}
-                vscodeExtActive={a.id === vscodeExtCurrentAccountId}
+                vscodeExtActive={enabledTools.vscodeExt && a.id === vscodeExtCurrentAccountId}
                 vscodeExtBusy={vscodeSwitchAccount !== null}
                 onSwitchVscodeExt={setVscodeSwitchAccount}
+                jetbrainsInstalled={Boolean(jetbrains?.installed)}
+                jetbrainsPluginInstalled={Boolean(jetbrains?.pluginInstalled)}
+                jetbrainsAvailable={Boolean(jetbrains?.installed && jetbrains?.pluginInstalled)}
+                jetbrainsActive={enabledTools.jetbrains && a.id === jetbrainsCurrentAccountId}
+                jetbrainsBusy={jetbrainsSwitchTarget !== null}
+                onSwitchJetbrains={setJetbrainsSwitchTarget}
+                enabledTools={enabledTools}
                 featuresDisabled={false}
               />
             ))}
@@ -1036,6 +1001,22 @@ export default function AccountsPage() {
         onImported={onImported}
         variant={variant}
       />
+      <CleanupSessionsDialog
+        open={cleanupSessionsAccount !== null}
+        onOpenChange={(open) => {
+          if (!open) setCleanupSessionsAccount(null);
+        }}
+        account={cleanupSessionsAccount}
+        onCleaned={() => void fetchAll()}
+      />
+      <DedupSessionsDialog
+        open={dedupSessionsAccount !== null}
+        onOpenChange={(open) => {
+          if (!open) setDedupSessionsAccount(null);
+        }}
+        account={dedupSessionsAccount}
+        onCleaned={() => void fetchAll()}
+      />
       <SwitchAccountDialog
         open={switchAccount !== null}
         onOpenChange={(o) => {
@@ -1043,7 +1024,19 @@ export default function AccountsPage() {
         }}
         account={switchAccount}
         onDone={() => {
-          void fetchAll({ force: true });
+          void fetchAll();
+          void ensureAppStatus(variant, { force: true });
+        }}
+      />
+      <CodebuddyIdeSwitchAccountDialog
+        open={codebuddyIdeSwitchAccount !== null}
+        onOpenChange={(o) => {
+          if (!o) setCodebuddyIdeSwitchAccount(null);
+        }}
+        account={codebuddyIdeSwitchAccount}
+        variant={variant}
+        ideStatus={codebuddyCnIde}
+        onDone={() => {
           void ensureAppStatus(variant, { force: true });
         }}
       />
@@ -1058,24 +1051,15 @@ export default function AccountsPage() {
           void ensureAppStatus(variant, { force: true });
         }}
       />
-      <CleanupSessionsDialog
-        open={cleanupAccount !== null}
+      <JetbrainsSwitchDialog
+        open={jetbrainsSwitchTarget !== null}
         onOpenChange={(o) => {
-          if (!o) setCleanupAccount(null);
+          if (!o) setJetbrainsSwitchTarget(null);
         }}
-        account={cleanupAccount}
-        onCleaned={() => {
-          void fetchAll();
-        }}
-      />
-      <DedupSessionsDialog
-        open={dedupAccount !== null}
-        onOpenChange={(o) => {
-          if (!o) setDedupAccount(null);
-        }}
-        account={dedupAccount}
-        onCleaned={() => {
-          void fetchAll();
+        account={jetbrainsSwitchTarget}
+        jetbrainsStatus={jetbrains}
+        onDone={() => {
+          void refreshJetbrainsStatus();
         }}
       />
 

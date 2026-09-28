@@ -12,5 +12,9 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/window-icon-48.rgba");
     println!("cargo:rerun-if-changed=icons/window-icon-64.rgba");
     println!("cargo:rerun-if-changed=icons/window-icon-128.rgba");
+    println!(
+        "cargo:rustc-env=AGENT_COMPANION_TARGET={}",
+        std::env::var("TARGET").expect("Cargo TARGET")
+    );
     tauri_build::build()
 }
