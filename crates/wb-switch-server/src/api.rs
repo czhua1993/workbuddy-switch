@@ -131,7 +131,10 @@ pub fn router() -> Router {
         .route("/api/checkin/status", get(api_checkin_status))
         .route("/api/credits", post(api_credits))
         .route("/api/credits/stats", get(api_credit_statistics))
-        .route("/api/account-official-usage", get(api_account_official_usage))
+        .route(
+            "/api/account-official-usage",
+            get(api_account_official_usage),
+        )
         .route("/api/token-stats", get(api_token_statistics))
         .route("/api/rate-limits", get(api_rate_limits))
         .route(
@@ -966,7 +969,11 @@ async fn api_credit_statistics(RawQuery(query): RawQuery) -> Response {
 async fn api_account_official_usage(RawQuery(query): RawQuery) -> Response {
     let account_id = query
         .as_deref()
-        .and_then(|value| value.split('&').find_map(|part| part.strip_prefix("accountId=")))
+        .and_then(|value| {
+            value
+                .split('&')
+                .find_map(|part| part.strip_prefix("accountId="))
+        })
         .unwrap_or("")
         .to_string();
     json_ok(

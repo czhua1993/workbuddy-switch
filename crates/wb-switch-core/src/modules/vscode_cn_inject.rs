@@ -379,13 +379,17 @@ fn get_macos_safe_storage_password(target: &VscodeSafeStorageTarget) -> Result<S
     // 只查询一次：解密只依赖 password 本身、与 account 属性无关，
     // 单次查询最多触发一次钥匙串授权弹窗（多候选循环会逐次弹窗）。
     let service = target.macos_keychain_service;
-    run_command_get_trimmed("security", &["find-generic-password", "-w", "-s", service], 10)
-        .ok_or_else(|| {
-            format!(
-                "无法从 Keychain 读取 {service} 密码。请先手动打开 {} 并登录一次。",
-                target.display_name
-            )
-        })
+    run_command_get_trimmed(
+        "security",
+        &["find-generic-password", "-w", "-s", service],
+        10,
+    )
+    .ok_or_else(|| {
+        format!(
+            "无法从 Keychain 读取 {service} 密码。请先手动打开 {} 并登录一次。",
+            target.display_name
+        )
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -440,7 +444,7 @@ fn get_local_state_path(data_root: &Path) -> Result<PathBuf, String> {
 #[cfg(target_os = "windows")]
 fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
-        let mut data_in = CRYPT_INTEGER_BLOB {
+        let data_in = CRYPT_INTEGER_BLOB {
             cbData: encrypted.len() as u32,
             pbData: encrypted.as_ptr() as *mut u8,
         };
@@ -448,7 +452,7 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
             cbData: 0,
             pbData: std::ptr::null_mut(),
         };
-        CryptUnprotectData(&mut data_in, None, None, None, None, 0, &mut data_out)
+        CryptUnprotectData(&data_in, None, None, None, None, 0, &mut data_out)
             .map_err(|e| format!("DPAPI CryptUnprotectData failed: {e}"))?;
         if data_out.pbData.is_null() || data_out.cbData == 0 {
             return Err("DPAPI returned empty data".to_string());
@@ -526,7 +530,7 @@ fn decrypt_secret_payload(
     {
         let _ = target;
         let key = get_windows_encryption_key(data_root)?;
-        return decrypt_windows_gcm_v10(&key, encrypted);
+        decrypt_windows_gcm_v10(&key, encrypted)
     }
     #[cfg(target_os = "macos")]
     {
@@ -574,7 +578,7 @@ fn encrypt_secret_payload(
     {
         let _ = (preferred_prefix, target);
         let key = get_windows_encryption_key(data_root)?;
-        return encrypt_windows_gcm_v10(&key, plaintext);
+        encrypt_windows_gcm_v10(&key, plaintext)
     }
     #[cfg(target_os = "macos")]
     {

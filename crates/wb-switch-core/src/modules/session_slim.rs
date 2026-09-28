@@ -10,7 +10,9 @@ use std::path::Path;
 
 use crate::modules::account;
 use crate::modules::config::{backup_dir, home_dir, now_ms, utc_iso};
-use crate::modules::session::{backup_workbuddy_db, open_db, table_exists, workbuddy_db_path, SessionPaths};
+use crate::modules::session::{
+    backup_workbuddy_db, open_db, table_exists, workbuddy_db_path, SessionPaths,
+};
 
 /// 会话瘦身：每账号每 cwd 保留 updated_at 最新 keep 条，其余软删。
 ///
@@ -262,8 +264,7 @@ pub(crate) fn slim_sessions_in_db_cloud(args: &SlimArgs) -> Result<(Value, Vec<S
         "dryRun": args.dry_run,
     });
     if args.cloud.is_some() {
-        report["cloud"] =
-            stats.to_json(args.cloud.map(|c| c.token.is_some()).unwrap_or(false));
+        report["cloud"] = stats.to_json(args.cloud.map(|c| c.token.is_some()).unwrap_or(false));
     }
     let victim_sids: Vec<String> = victims.iter().map(|(id, _cwd)| id.clone()).collect();
     Ok((report, victim_sids))
@@ -323,7 +324,11 @@ fn apply_victims(
 /// `syncDeleteConversation`）⇒ 逐条落盘是**唯一**可事后核验的证据源。
 ///
 /// 只记录真实执行（非 dry_run），写失败不影响业务。
-fn append_cloud_delete_audit(uid: &str, sid: &str, outcome: &crate::modules::cloud_conv::CloudDelete) {
+fn append_cloud_delete_audit(
+    uid: &str,
+    sid: &str,
+    outcome: &crate::modules::cloud_conv::CloudDelete,
+) {
     use std::io::Write;
     let path = home_dir().join(".wb-switch").join("cloud_delete_log.jsonl");
     if let Some(dir) = path.parent() {
@@ -348,7 +353,11 @@ fn append_cloud_delete_audit(uid: &str, sid: &str, outcome: &crate::modules::clo
         "detail": detail,
     })
     .to_string();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -434,7 +443,10 @@ fn reconcile_cloud_stage(
     if rows.is_empty() {
         return json!({ "skipped": "no mapping db" });
     }
-    let (alive, deleted) = match read_local_alive_deleted(&workbuddy_db_path(crate::modules::variant::WbVariant::Cn), uid) {
+    let (alive, deleted) = match read_local_alive_deleted(
+        &workbuddy_db_path(crate::modules::variant::WbVariant::Cn),
+        uid,
+    ) {
         Ok(v) => v,
         Err(e) => return json!({ "error": e }),
     };
@@ -465,7 +477,10 @@ fn reconcile_cloud_stage(
 /// 只报数，不做任何删除：`foreign`（本机无痕迹）多半是别的设备的活会话，
 /// 删了就伤到别人。dry_run 与否都照跑（无副作用）。
 fn inventory_cloud_stage(uid: &str) -> Value {
-    let (alive, deleted) = match read_local_alive_deleted(&workbuddy_db_path(crate::modules::variant::WbVariant::Cn), uid) {
+    let (alive, deleted) = match read_local_alive_deleted(
+        &workbuddy_db_path(crate::modules::variant::WbVariant::Cn),
+        uid,
+    ) {
         Ok(v) => v,
         Err(e) => return json!({ "error": e }),
     };
@@ -487,13 +502,17 @@ fn inventory_cloud_stage(uid: &str) -> Value {
 fn read_local_alive_deleted(
     db: &std::path::Path,
     uid: &str,
-) -> Result<(std::collections::HashSet<String>, std::collections::HashSet<String>), String> {
+) -> Result<
+    (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ),
+    String,
+> {
     use std::collections::HashSet;
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| format!("打开 workbuddy.db 失败: {e}"))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("打开 workbuddy.db 失败: {e}"))?;
     let mut alive = HashSet::new();
     let mut deleted = HashSet::new();
     let mut stmt = conn
@@ -708,9 +727,15 @@ mod tests {
             "真删数（200）与 alreadyGone（404）必须分开报，否则事后无法自证删成功"
         );
         assert_eq!(rep2["cloud"]["alreadyGone"], 0);
-        assert_eq!(rep2["cloud"]["failed"], 0, "无 token 不算失败，本地不被卡住");
+        assert_eq!(
+            rep2["cloud"]["failed"], 0,
+            "无 token 不算失败，本地不被卡住"
+        );
         assert_eq!(rep2["cloud"]["noToken"], 1, "own_a：归属对但没凭证");
-        assert_eq!(rep2["cloud"]["foreign"], 1, "foreign_a：云端归别的账号，不碰");
+        assert_eq!(
+            rep2["cloud"]["foreign"], 1,
+            "foreign_a：云端归别的账号，不碰"
+        );
         assert_eq!(rep2["cloud"]["noMapping"], 1, "none_a：本机没有映射");
 
         // ③ 不勾云端 ⇒ 报告里根本没有 cloud 段（旧行为不变）
@@ -748,7 +773,9 @@ mod tests {
         let alive = |db: &Path| -> Vec<String> {
             let conn = Connection::open(db).unwrap();
             let mut stmt = conn
-                .prepare("SELECT id FROM sessions WHERE cwd='D:\\p1' AND deleted_at IS NULL ORDER BY id")
+                .prepare(
+                    "SELECT id FROM sessions WHERE cwd='D:\\p1' AND deleted_at IS NULL ORDER BY id",
+                )
                 .unwrap();
             stmt.query_map([], |r| r.get::<_, String>(0))
                 .unwrap()
@@ -759,7 +786,11 @@ mod tests {
         // 无保护：keep=1 只留最新的 c2，复制体互相挤掉（用户只看到 1 条）
         let rep = slim_sessions_in_db(&db, "uid-a", 1, false, &[]).unwrap();
         let kept = alive(&db);
-        assert_eq!(kept, vec!["c2".to_string()], "无保护时只剩最新一条: {kept:?}");
+        assert_eq!(
+            kept,
+            vec!["c2".to_string()],
+            "无保护时只剩最新一条: {kept:?}"
+        );
         assert_eq!(rep["deleted"], 3);
 
         // 有保护：c1/c2 都留，且 p1 原有的最新一条 s2 也留（复制体不占名额）
@@ -793,5 +824,4 @@ mod tests {
         assert_eq!(rep2["deleted"], 1, "只删旧的 s1");
         assert_eq!(rep2["excluded"], 2);
     }
-
 }

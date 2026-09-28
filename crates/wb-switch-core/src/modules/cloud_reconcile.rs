@@ -283,7 +283,11 @@ mod tests {
                 cloud_conv::classify(200, "{}")
             },
         );
-        assert_eq!(called, vec!["c2".to_string()], "只删本机已软删那把 cid 钥匙");
+        assert_eq!(
+            called,
+            vec!["c2".to_string()],
+            "只删本机已软删那把 cid 钥匙"
+        );
         assert_eq!(r["removed"], 1);
         assert_eq!(r["aligned"], 1);
         assert_eq!(r["unknown"], 1);
@@ -312,7 +316,11 @@ mod tests {
                 cloud_conv::classify(404, r#"{"code":14284}"#)
             },
         );
-        assert_eq!(called, vec!["c2".to_string()], "s3 本 run 已处理，不得重复请求");
+        assert_eq!(
+            called,
+            vec!["c2".to_string()],
+            "s3 本 run 已处理，不得重复请求"
+        );
         assert_eq!(r["planned"], 1, "planned 只数真会发起的请求");
         assert_eq!(r["skippedBySlim"], 1);
         assert_eq!(r["mapped"], 2, "mapped 是映射行总数，不受 skip 影响");
@@ -352,7 +360,10 @@ mod tests {
         assert_eq!(r["foreign"], 1, "c3 是本机无痕迹的他机会话");
         assert_eq!(r["localOnly"], 1, "l1 未上云（合计口径保持向后兼容）");
         assert_eq!(r["localOnlyAlive"], 1, "l1 活会话未上云");
-        assert_eq!(r["localOnlyDeleted"], 0, "c2 已软删但云端还在 → 归 stale 不归这里");
+        assert_eq!(
+            r["localOnlyDeleted"], 0,
+            "c2 已软删但云端还在 → 归 stale 不归这里"
+        );
     }
 
     #[test]

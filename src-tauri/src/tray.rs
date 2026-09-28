@@ -740,14 +740,22 @@ fn color_icon() -> tauri::image::Image<'static> {
 /// `icon-windows.png`，与 ICO / 开始菜单外观保持一致（无圆角版会显示成方块）。
 #[cfg(not(target_os = "macos"))]
 fn window_icon(scale_factor: f64) -> tauri::image::Image<'static> {
-    const ICON_32: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-32.rgba"));
-    const ICON_48: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-48.rgba"));
-    const ICON_64: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-64.rgba"));
-    const ICON_128: &[u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/window-icon-128.rgba"));
+    const ICON_32: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/icons/window-icon-32.rgba"
+    ));
+    const ICON_48: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/icons/window-icon-48.rgba"
+    ));
+    const ICON_64: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/icons/window-icon-64.rgba"
+    ));
+    const ICON_128: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/icons/window-icon-128.rgba"
+    ));
     // 任务栏按钮 / Alt-Tab 的基准是 32 逻辑像素（ICON_BIG）；取 ≥ 需求的最小档，
     // 让系统做缩小而非放大（缩小不糊），超出档位范围则用最大档兜底。
     let need = (32.0 * scale_factor.max(1.0)).ceil() as u32;

@@ -45,7 +45,10 @@ fn save_map(map: &Value) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = atomic_write(&path, &serde_json::to_string_pretty(map).unwrap_or_default());
+    let _ = atomic_write(
+        &path,
+        &serde_json::to_string_pretty(map).unwrap_or_default(),
+    );
 }
 
 /// 沿复制链向上找「根会话」id：若 cid 本身是复制产物，返回其源会话的根。
@@ -94,12 +97,7 @@ pub fn find_copy(source_uid: &str, source_cid: &str, target_uid: &str) -> Option
 }
 
 /// 记录一条复制关系。
-pub fn record_copy(
-    source_uid: &str,
-    source_cid: &str,
-    target_uid: &str,
-    target_cid: &str,
-) {
+pub fn record_copy(source_uid: &str, source_cid: &str, target_uid: &str, target_cid: &str) {
     let mut map = load_map();
     let entry = json!({
         "sourceUid": source_uid,

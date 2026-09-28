@@ -1270,7 +1270,7 @@ pub(crate) fn inject_session_and_finish(
         launch_codebuddy_cn()?;
     }
 
-    let name = account::account_display_name(&acc);
+    let name = account::account_display_name(acc);
     let message = if was_running {
         format!("已切换 CodeBuddy IDE 到 {name} 并重启")
     } else {

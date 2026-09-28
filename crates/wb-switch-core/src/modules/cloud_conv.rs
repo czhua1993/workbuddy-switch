@@ -34,7 +34,6 @@ fn account_uid(acc: &Value) -> String {
         .unwrap_or_default()
 }
 
-
 /// 官方网关（与 `ui_theme` 一致；本机 WARP 需 `no_proxy` 直连）。
 pub const CLOUD_BASE: &str = "https://www.workbuddy.cn";
 
@@ -92,7 +91,10 @@ pub fn delete_conversation(token: &str, sid: &str) -> CloudDelete {
     if token.is_empty() || sid.is_empty() {
         return CloudDelete::Failed("缺 token 或 sid".into());
     }
-    let url = format!("{CLOUD_BASE}/console/as/conversations/{}/delete", urlencode(sid));
+    let url = format!(
+        "{CLOUD_BASE}/console/as/conversations/{}/delete",
+        urlencode(sid)
+    );
     let resp = http().post(&url).bearer_auth(token).send();
     match resp {
         Ok(r) => {
@@ -118,7 +120,9 @@ pub const CLOUD_LIST_PAGE_SIZE: usize = 100;
 /// 解析一页列表响应 → (本页 sid 列表, 是否还有下一页)。纯函数，便于单测。
 pub fn parse_conversation_page(body: &str) -> Result<(Vec<String>, bool), String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("响应不是 JSON: {e}"))?;
-    let data = v.get("data").ok_or_else(|| "响应缺 data 字段".to_string())?;
+    let data = v
+        .get("data")
+        .ok_or_else(|| "响应缺 data 字段".to_string())?;
     let sids = data
         .get("conversations")
         .and_then(|c| c.as_array())
@@ -259,9 +263,7 @@ pub fn mapping_channels_from(db: &std::path::Path) -> HashMap<String, String> {
     let Ok(conn) = Connection::open(db) else {
         return HashMap::new();
     };
-    let Ok(mut stmt) =
-        conn.prepare("SELECT session_id, msg_channel FROM edge_sync_mapping")
-    else {
+    let Ok(mut stmt) = conn.prepare("SELECT session_id, msg_channel FROM edge_sync_mapping") else {
         return HashMap::new();
     };
     let Ok(rows) = stmt.query_map([], |r| {
@@ -468,7 +470,10 @@ mod tests {
 
     #[test]
     fn classify_maps_http_status() {
-        assert_eq!(classify(200, r#"{"code":0,"msg":"OK"}"#), CloudDelete::Deleted);
+        assert_eq!(
+            classify(200, r#"{"code":0,"msg":"OK"}"#),
+            CloudDelete::Deleted
+        );
         assert_eq!(classify(200, ""), CloudDelete::Deleted);
         assert_eq!(
             classify(404, r#"{"code":14284,"msg":"conversation not found"}"#),
@@ -512,16 +517,20 @@ mod tests {
 
     #[test]
     fn missing_input_never_touches_network() {
-        assert!(matches!(delete_conversation("", "x"), CloudDelete::Failed(_)));
-        assert!(matches!(delete_conversation("t", ""), CloudDelete::Failed(_)));
+        assert!(matches!(
+            delete_conversation("", "x"),
+            CloudDelete::Failed(_)
+        ));
+        assert!(matches!(
+            delete_conversation("t", ""),
+            CloudDelete::Failed(_)
+        ));
     }
 
     #[test]
     fn mapping_channels_from_reads_table() {
-        let db = std::env::temp_dir().join(format!(
-            "wb_cloudconv_{}.db",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let db =
+            std::env::temp_dir().join(format!("wb_cloudconv_{}.db", uuid::Uuid::new_v4().simple()));
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
             "CREATE TABLE edge_sync_mapping (session_id TEXT PRIMARY KEY, \

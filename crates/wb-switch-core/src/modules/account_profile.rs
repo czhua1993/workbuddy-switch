@@ -203,9 +203,15 @@ mod tests {
         });
         merge_profile(&mut account, &entry);
         assert_eq!(account.get("uid").and_then(Value::as_str), Some("u-new"));
-        assert_eq!(account.get("nickname").and_then(Value::as_str), Some("新昵称"));
+        assert_eq!(
+            account.get("nickname").and_then(Value::as_str),
+            Some("新昵称")
+        );
         assert_eq!(account.get("uin").and_then(Value::as_str), Some("3301"));
-        assert_eq!(account.get("access_token").and_then(Value::as_str), Some("SECRET"));
+        assert_eq!(
+            account.get("access_token").and_then(Value::as_str),
+            Some("SECRET")
+        );
         assert_eq!(account.get("variant").and_then(Value::as_str), Some("cn"));
         assert!(account
             .get("profile_console_raw")

@@ -796,8 +796,7 @@ pub fn dedup_vscode_sessions(uid: &str, dry_run: bool) -> Result<Value, String> 
     }
     if vscode_ext::is_vscode_running() {
         return Err(
-            "检测到 VS Code 正在运行，请先完全退出后再清理重复会话，否则改动会被覆盖。"
-                .to_string(),
+            "检测到 VS Code 正在运行，请先完全退出后再清理重复会话，否则改动会被覆盖。".to_string(),
         );
     }
     let Some(root) = ext_data_root() else {
@@ -869,7 +868,10 @@ pub fn dedup_vscode_sessions(uid: &str, dry_run: bool) -> Result<Value, String> 
         // 同工作区内先按标题分组（缩小内容指纹比对范围）。
         let mut by_name: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();
         for (id, name, updated_at) in cands {
-            by_name.entry(name.clone()).or_default().push((id, updated_at));
+            by_name
+                .entry(name.clone())
+                .or_default()
+                .push((id, updated_at));
         }
         for (name, members) in by_name {
             if members.len() < 2 {
@@ -2332,10 +2334,8 @@ mod tests {
 
     #[test]
     fn scan_messages_same_body_diff_ids_overlaps() {
-        let dir = std::env::temp_dir().join(format!(
-            "wb_dedup_fp_{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wb_dedup_fp_{}", uuid::Uuid::new_v4().simple()));
         let ws = dir.join("ws");
         // 源会话：message 含 messageId（复制后会变），但正文一致。
         let src = ws.join("11111111111111111111111111111111");
@@ -2366,10 +2366,8 @@ mod tests {
 
     #[test]
     fn scan_messages_distinct_body_no_overlap() {
-        let dir = std::env::temp_dir().join(format!(
-            "wb_dedup_fp_{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wb_dedup_fp_{}", uuid::Uuid::new_v4().simple()));
         let ws = dir.join("ws");
         let a = ws.join("11111111111111111111111111111111");
         std::fs::create_dir_all(a.join("messages")).unwrap();

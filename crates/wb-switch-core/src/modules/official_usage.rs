@@ -247,7 +247,7 @@ pub async fn official_usage_for_statistics(accounts: &[Value], at_ms: i64, refre
 /// 与积分统计页「请求用量」表完全一致（统计页每账号上限即 `OFFICIAL_USAGE_DETAIL_LIMIT`）。
 pub async fn official_usage_for_account(account: &Value, limit: usize) -> Value {
     let at_ms = Local::now().timestamp_millis();
-    let mut usage = collect_official_usage(&[account.clone()], at_ms).await;
+    let mut usage = collect_official_usage(std::slice::from_ref(account), at_ms).await;
     let limit = limit.max(1);
     if let Some(object) = usage.as_object_mut() {
         object.insert("detailLimitPerAccount".into(), json!(limit));
