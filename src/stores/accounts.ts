@@ -1,7 +1,16 @@
 import { create } from "zustand";
 import * as api from "@/lib/api";
 import { DEFAULT_VARIANT, normalizeVariant } from "@/lib/variant";
-import type { AccountMeta, AppStatus, CreditExpiry, WbVariant } from "@/lib/types";
+import type {
+  AccountMeta,
+  AppStatus,
+  CodeBuddyCliStatus,
+  CodeBuddyCnIdeStatus,
+  CreditExpiry,
+  JetbrainsStatus,
+  VscodeExtStatus,
+  WbVariant,
+} from "@/lib/types";
 
 /** In-flight credit fetches, shared so a remount does not start a second round. */
 const creditInflight = new Set<string>();
@@ -34,6 +43,21 @@ async function fetchCreditExpiry(id: string): Promise<CreditExpiry> {
   }
 }
 
+/** 各客户端最近一次读到的状态（账号页顶栏徽标与卡片入口共用）。 */
+export interface ClientStatusSnapshot {
+  codebuddyCli: CodeBuddyCliStatus | null;
+  codebuddyCnIde: CodeBuddyCnIdeStatus | null;
+  vscodeExt: VscodeExtStatus | null;
+  jetbrains: JetbrainsStatus | null;
+}
+
+const EMPTY_CLIENT_STATUS: ClientStatusSnapshot = {
+  codebuddyCli: null,
+  codebuddyCnIde: null,
+  vscodeExt: null,
+  jetbrains: null,
+};
+
 interface AccountsState {
   accounts: AccountMeta[];
   /**
@@ -42,6 +66,13 @@ interface AccountsState {
    */
   variant: WbVariant;
   status: AppStatus | null;
+  /**
+   * 各客户端状态留在 store 而不是页面局部 state：账号页每次进入都会重挂载，
+   * 局部 state 会被重置为 `null`，界面先按「未接入」渲染、等状态探测回来才改口
+   * （issue #84 的「回切账号管理页状态显示延迟」）。放这里则先按上次结果渲染，
+   * 后台刷新回来后自然覆盖。
+   */
+  clientStatus: ClientStatusSnapshot;
   loading: boolean;
   error: string | null;
   creditMap: Record<string, CreditExpiry>;
@@ -51,6 +82,8 @@ interface AccountsState {
   refreshingCredits: boolean;
   lastCreditRefreshAt: number;
   setVariant: (variant: WbVariant) => void;
+  /** 合并式更新各客户端状态：只覆盖传入的键，并发刷新不会互相清空。 */
+  setClientStatus: (patch: Partial<ClientStatusSnapshot>) => void;
   /** `force`：忽略最小重拉间隔（切档位、导入、签到后等状态确实变了的场景）。 */
   fetchAll: (opts?: { force?: boolean }) => Promise<void>;
   refreshStatus: (signal?: AbortSignal) => Promise<void>;
@@ -67,6 +100,7 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
   accounts: [],
   variant: DEFAULT_VARIANT,
   status: null,
+  clientStatus: EMPTY_CLIENT_STATUS,
   loading: false,
   error: null,
   creditMap: {},
@@ -82,6 +116,10 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
     // 否则会短暂显示上一档位的运行/当前账号状态。
     set({ variant: next, status: null });
     void get().fetchAll({ force: true });
+  },
+
+  setClientStatus(patch) {
+    set((state) => ({ clientStatus: { ...state.clientStatus, ...patch } }));
   },
 
   async fetchAll(opts) {

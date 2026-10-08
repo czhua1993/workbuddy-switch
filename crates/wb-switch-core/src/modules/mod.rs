@@ -29,6 +29,7 @@ pub mod refresh;
 pub mod rotate;
 pub mod session;
 pub mod session_backup;
+pub mod session_groups;
 pub mod session_link;
 pub mod session_slim;
 pub mod switch;

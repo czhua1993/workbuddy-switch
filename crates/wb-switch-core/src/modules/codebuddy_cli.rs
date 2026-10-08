@@ -1087,10 +1087,10 @@ fn account_index_by_token(accounts: &[Value], token: &str) -> Option<(usize, Str
 }
 
 /// Windows 静态认证下，把当前 CLI 活跃账号刷新后的 token 同步到 settings。
-/// 只要本账号正是 CLI 活跃账号（state 指向它），就无条件把最新 token 写回
-/// settings，让 settings 里的 CLI 认证快照始终跟随 accounts.json，避免脱节；
-/// 仅当 settings 已是最新 token 时跳过写入。非活跃账号一律早退，不会用刷新
-/// 结果覆盖用户刚刚手动切换到的其他账号；失败只返回脱敏错误。
+/// 只要本账号正是 CLI 活跃账号（state 指向它），就把最新 token 写回 settings，
+/// 让 settings 里的 CLI 认证快照始终跟随 accounts.json，避免脱节；仅当 settings
+/// 已是最新 token 时跳过写入。非活跃账号一律早退；settings 指向**其它**账号时
+/// 也早退（用户刚手动切过去，不能被刷新结果盖回）；失败只返回脱敏错误。
 pub fn sync_windows_env_for_account(
     account_value: &Value,
     previous_access_token: Option<&str>,
@@ -1118,14 +1118,31 @@ pub fn sync_windows_env_for_account(
     let Some(updated_token) = account_value.get("access_token").and_then(Value::as_str) else {
         return Ok(false);
     };
-    // 本账号正是 CLI 活跃账号：无条件把最新 token 写回 settings，
-    // 让 settings 里的 CLI 认证快照始终跟随 accounts.json，避免脱节。
-    // 仅当 settings 已是最新 token 时跳过写入（already_synced）。
+    // 本账号正是 CLI 活跃账号：把最新 token 写回 settings，让 settings 里的 CLI
+    // 认证快照始终跟随 accounts.json，避免脱节。
     // 不再依赖「settings token == 刷新前 token」的严格比对——保活/惰性刷新、
     // 重新登录、OAuth 采集、导入都会改 accounts.json 的 token，只要活跃账号没变，
     // settings 就应当跟进；旧条件会让脱节在 previous/new 都不命中时永久静默存在。
+    //
+    // 唯一保留的拦截：settings 里的 token 命中**其它**账号，说明用户手动切过去了，
+    // 不能用活跃账号的刷新结果覆盖它。
+    // 反过来，匹配不上任何账号的孤儿值（历史刷新没同步成功 / 账号重新登录换了
+    // token）必须允许覆盖，否则状态不可自愈：settings 既不等于刷新前 token 也不
+    // 等于刷新后 token，每次刷新都在这里被挡掉，界面永远停在「认证脱节」。
     let current = clean_bearer_token(current_token);
     let already_synced = clean_bearer_token(updated_token) == current;
+    let current_belongs_to_other = accounts.iter().any(|candidate| {
+        candidate.get("id").and_then(Value::as_str) != Some(active_id.as_str())
+            && clean_bearer_token(
+                candidate
+                    .get("access_token")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            ) == current
+    });
+    if current_belongs_to_other {
+        return Ok(false);
+    }
     if already_synced {
         return Ok(true);
     }
@@ -1143,6 +1160,46 @@ pub fn sync_windows_env_for_account(
         WbVariant::from_account(account_value),
     )?;
     Ok(true)
+}
+
+/// 保活刷新后、settings 尚未同步的宽限窗口。
+///
+/// 账号库在此时间内被写过，说明大概率正处在「保活刚换完 token、settings 还没跟上」
+/// 的正常中间态，此时不该提示用户「认证脱节」。
+const ACCOUNTS_SYNC_GRACE_MS: i64 = 30_000;
+
+/// 账号库是否在最近 `window_ms` 内被写过（按 mtime 判断）。
+fn account_store_written_within(window_ms: i64) -> bool {
+    let path = crate::modules::config::accounts_file();
+    let Ok(modified) = std::fs::metadata(path).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    match std::time::SystemTime::now().duration_since(modified) {
+        Ok(age) => (age.as_millis() as i64) <= window_ms,
+        // 时钟回拨等异常：按「刚写过」处理，宁可少报一次也不误报脱节。
+        Err(_) => true,
+    }
+}
+
+/// 由状态位推导 `(syncPending, syncInProgress)`。
+///
+/// - `syncPending`：真脱节——settings 的 token 反查不到账号，且已超出同步宽限窗口，
+///   需要用户介入（点「更新 CLI 认证」）。
+/// - `syncInProgress`：保活刚写完账号库、settings 尚未跟上的正常中间态，
+///   稍候会自动完成，不该催用户操作。
+///
+/// 抽成纯函数是为了让边界（尤其是宽限窗口的临界点）可被单测固定住。
+fn classify_sync_state(
+    windows: bool,
+    env_configured: bool,
+    active_missing: bool,
+    expected_present: bool,
+    recently_written: bool,
+) -> (bool, bool) {
+    let pending_raw = windows && env_configured && active_missing && expected_present;
+    let in_progress = pending_raw && recently_written;
+    let pending = pending_raw && !recently_written;
+    (pending, in_progress)
 }
 
 /// 返回脱敏的 CLI 轮换状态，不返回 token 或 helper 内容。
@@ -1169,13 +1226,23 @@ pub fn status() -> Value {
     } else {
         helper_migration_required()
     };
+    // 脱节判定拆成两个互斥状态：真脱节 vs 保活刷新中的正常中间态。
+    // 后者若也报脱节，用户会在每次启动看到「认证脱节」并反复点按钮。
+    let (sync_pending, sync_in_progress) = classify_sync_state(
+        cfg!(windows),
+        env_configured,
+        active.is_none(),
+        expected_active.is_some(),
+        account_store_written_within(ACCOUNTS_SYNC_GRACE_MS),
+    );
     json!({
         "configured": configured,
         "authMode": if cfg!(windows) { "settings-env" } else { "api-key-helper" },
         "environmentOverride": environment_override,
         "helperCurrent": if cfg!(windows) { env_configured } else { helper_is_current() },
         "migrationRequired": migration_required,
-        "syncPending": cfg!(windows) && env_configured && active.is_none() && expected_active.is_some(),
+        "syncPending": sync_pending,
+        "syncInProgress": sync_in_progress,
         "settingsPresent": settings_path().is_file(),
         "helperPresent": helper_path().map(|path| path.is_file()).unwrap_or(false),
         "helperSupportsAccountIds": helper_supports_account_ids(),
